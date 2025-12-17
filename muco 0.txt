@@ -1,0 +1,1166 @@
+yukarıdaki algoritmanın sinir ağlarını kodla ve geliştir
+Aşağıdaki kod, sinir ağları kullanarak MUCO projesindeki çeşitli görevleri geliştirmek için genişletilmiş bir yapı sunar. Her bir modül için ayrı sinir ağı modelleri tasarlanmıştır.
+
+Önemli: Bu kodlar eğitim ve test verileri olmadan çalıştırılamaz. Sadece mimariyi göstermek için tasarlanmıştır.
+
+İçerik:
+
+Finansal Tahmin için Derin Öğrenme Modeli (LSTM)
+
+İçerik Üretimi için Transformer Tabanlı Model (GPT-2 ince ayarı)
+
+Tasarım (Logo) için Üretken Sinir Ağı (CNN tabanlı)
+
+Video Öneri Sistemi için Derin Öğrenme Modeli
+
+Not: Bu kodların çalıştırılması için gerekli kütüphanelerin yüklenmesi gerekmektedir.
+
+Başlayalım:
+
+MUCO: Gelişmiş Sinir Ağı Modülleri
+MUCO platformu için derin öğrenme modellerini içeren genişletilmiş bir implementasyon:
+
+1. LSTM ile Finansal Zaman Serisi Tahmini
+python
+# muco_finance_lstm.py
+import numpy as np
+import pandas as pd
+import yfinance as yf
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from sklearn.preprocessing import MinMaxScaler
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
+
+class FinancialLSTM:
+    def __init__(self, sequence_length=60):
+        self.sequence_length = sequence_length
+        self.model = None
+        self.scaler = MinMaxScaler()
+        
+    def create_model(self, input_shape):
+        """LSTM tabanlı finansal tahmin modeli"""
+        model = keras.Sequential([
+            layers.LSTM(128, return_sequences=True, input_shape=input_shape,
+                       dropout=0.2, recurrent_dropout=0.2),
+            layers.LSTM(64, return_sequences=True, dropout=0.2),
+            layers.LSTM(32, dropout=0.2),
+            layers.Dense(32, activation='relu'),
+            layers.Dropout(0.3),
+            layers.Dense(16, activation='relu'),
+            layers.Dense(1, activation='linear')
+        ])
+        
+        model.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=0.001),
+            loss='mse',
+            metrics=['mae', keras.metrics.RootMeanSquaredError()]
+        )
+        
+        return model
+    
+    def prepare_data(self, symbol='AAPL', period='1y'):
+        """Finansal verileri hazırlama"""
+        # Yahoo Finance'ten veri çekme
+        stock = yf.Ticker(symbol)
+        df = stock.history(period=period)
+        
+        # Teknik göstergeler
+        df['SMA_20'] = df['Close'].rolling(window=20).mean()
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
+        df['RSI'] = self.calculate_rsi(df['Close'])
+        df['MACD'] = self.calculate_macd(df['Close'])
+        
+        # Volatilite
+        df['Returns'] = df['Close'].pct_change()
+        df['Volatility'] = df['Returns'].rolling(window=20).std()
+        
+        # NaN değerleri temizle
+        df = df.dropna()
+        
+        return df
+    
+    def calculate_rsi(self, prices, period=14):
+        """RSI hesaplama"""
+        delta = prices.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+    
+    def calculate_macd(self, prices, slow=26, fast=12, signal=9):
+        """MACD hesaplama"""
+        ema_fast = prices.ewm(span=fast, adjust=False).mean()
+        ema_slow = prices.ewm(span=slow, adjust=False).mean()
+        macd = ema_fast - ema_slow
+        return macd
+    
+    def create_sequences(self, data):
+        """Verilerden sequence oluşturma"""
+        sequences = []
+        targets = []
+        
+        scaled_data = self.scaler.fit_transform(data)
+        
+        for i in range(len(scaled_data) - self.sequence_length):
+            seq = scaled_data[i:i + self.sequence_length]
+            target = scaled_data[i + self.sequence_length, 0]  # Close price
+            sequences.append(seq)
+            targets.append(target)
+            
+        return np.array(sequences), np.array(targets)
+    
+    def train(self, symbol='AAPL', epochs=100):
+        """Model eğitimi"""
+        # Veri hazırlama
+        df = self.prepare_data(symbol)
+        
+        # Özellik seçimi
+        features = ['Close', 'SMA_20', 'SMA_50', 'RSI', 'MACD', 'Volatility']
+        data = df[features].values
+        
+        # Sequence oluşturma
+        X, y = self.create_sequences(data)
+        
+        # Train-test split
+        split = int(0.8 * len(X))
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
+        
+        # Model oluşturma
+        self.model = self.create_model((self.sequence_length, len(features)))
+        
+        # Early stopping callback
+        early_stopping = keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=20,
+            restore_best_weights=True
+        )
+        
+        # Learning rate scheduler
+        lr_scheduler = keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,
+            patience=10
+        )
+        
+        # Model eğitimi
+        history = self.model.fit(
+            X_train, y_train,
+            validation_data=(X_test, y_test),
+            epochs=epochs,
+            batch_size=32,
+            callbacks=[early_stopping, lr_scheduler],
+            verbose=1
+        )
+        
+        return history
+    
+    def predict(self, data, days_ahead=7):
+        """Gelecek tahmini"""
+        if self.model is None:
+            raise ValueError("Model eğitilmemiş!")
+        
+        predictions = []
+        current_sequence = data[-self.sequence_length:].copy()
+        
+        for _ in range(days_ahead):
+            # Scale
+            scaled_seq = self.scaler.transform(current_sequence)
+            scaled_seq = scaled_seq.reshape(1, self.sequence_length, -1)
+            
+            # Tahmin
+            pred = self.model.predict(scaled_seq, verbose=0)[0, 0]
+            
+            # Inverse transform
+            dummy_row = np.zeros((1, data.shape[1]))
+            dummy_row[0, 0] = pred
+            pred_price = self.scaler.inverse_transform(dummy_row)[0, 0]
+            
+            predictions.append(pred_price)
+            
+            # Yeni sequence oluştur
+            new_row = current_sequence[-1].copy()
+            new_row[0] = pred_price
+            current_sequence = np.vstack([current_sequence[1:], new_row])
+        
+        return predictions
+    
+    def evaluate(self, X_test, y_test):
+        """Model değerlendirme"""
+        predictions = self.model.predict(X_test)
+        
+        # Inverse transform
+        dummy_pred = np.zeros((len(predictions), X_test.shape[2]))
+        dummy_pred[:, 0] = predictions.flatten()
+        predictions_inv = self.scaler.inverse_transform(dummy_pred)[:, 0]
+        
+        dummy_true = np.zeros((len(y_test), X_test.shape[2]))
+        dummy_true[:, 0] = y_test.flatten()
+        y_test_inv = self.scaler.inverse_transform(dummy_true)[:, 0]
+        
+        # Metrikler
+        mae = np.mean(np.abs(predictions_inv - y_test_inv))
+        rmse = np.sqrt(np.mean((predictions_inv - y_test_inv) ** 2))
+        
+        return {
+            'MAE': mae,
+            'RMSE': rmse,
+            'Accuracy': 100 * (1 - mae / np.mean(y_test_inv))
+        }
+
+# Kullanım örneği
+if __name__ == "__main__":
+    lstm_model = FinancialLSTM(sequence_length=60)
+    history = lstm_model.train(symbol='AAPL', epochs=50)
+    
+    # Tahmin yapma
+    df = lstm_model.prepare_data('AAPL')
+    features = ['Close', 'SMA_20', 'SMA_50', 'RSI', 'MACD', 'Volatility']
+    data = df[features].values
+    
+    predictions = lstm_model.predict(data, days_ahead=7)
+    print(f"Sonraki 7 gün tahmini: {predictions}")
+2. Transformer Tabanlı İçerik Üretici
+python
+# muco_transformer_content.py
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer, AutoModelForCausalLM, AdamW
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+import numpy as np
+from typing import List, Dict
+
+class ContentTransformer:
+    def __init__(self, model_name='gpt2'):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+        
+        # Model
+        self.model = GPT2LMHeadModel.from_pretrained(model_name)
+        self.model.to(self.device)
+        
+    def generate_content(self, prompt: str, max_length: int = 500, 
+                        temperature: float = 0.7, top_p: float = 0.9) -> str:
+        """İçerik üretimi"""
+        inputs = self.tokenizer.encode(prompt, return_tensors='pt').to(self.device)
+        
+        with torch.no_grad():
+            outputs = self.model.generate(
+                inputs,
+                max_length=max_length,
+                temperature=temperature,
+                top_p=top_p,
+                do_sample=True,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+                no_repeat_ngram_size=3,
+                early_stopping=True
+            )
+        
+        generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        return generated_text
+    
+    def fine_tune(self, dataset: List[Dict], epochs: int = 3, 
+                 batch_size: int = 4, learning_rate: float = 2e-5):
+        """Model fine-tuning"""
+        self.model.train()
+        
+        optimizer = AdamW(self.model.parameters(), lr=learning_rate)
+        
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        
+        for epoch in range(epochs):
+            total_loss = 0
+            for batch in dataloader:
+                inputs = self.tokenizer(
+                    batch['text'],
+                    return_tensors='pt',
+                    padding=True,
+                    truncation=True,
+                    max_length=512
+                ).to(self.device)
+                
+                labels = inputs['input_ids'].clone()
+                
+                # Forward pass
+                outputs = self.model(**inputs, labels=labels)
+                loss = outputs.loss
+                
+                # Backward pass
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                total_loss += loss.item()
+            
+            avg_loss = total_loss / len(dataloader)
+            print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}")
+        
+        self.model.eval()
+
+class ContentDataset(Dataset):
+    def __init__(self, texts: List[str]):
+        self.texts = texts
+    
+    def __len__(self):
+        return len(self.texts)
+    
+    def __getitem__(self, idx):
+        return {'text': self.texts[idx]}
+
+class MultiDomainContentGenerator:
+    def __init__(self):
+        self.models = {
+            'finance': ContentTransformer('gpt2'),
+            'technology': ContentTransformer('gpt2-medium'),
+            'creative': ContentTransformer('gpt2-large')
+        }
+        
+        self.prompt_templates = {
+            'article': "Aşağıdaki konu hakkında detaylı bir makale yaz:\n\nKonu: {topic}\n\nMakale:",
+            'video_script': "Aşağıdaki konu için video senaryosu oluştur:\n\nKonu: {topic}\n\nSenaryo:",
+            'social_media': "Aşağıdaki konu için sosyal medya gönderisi hazırla:\n\nKonu: {topic}\n\nGönderi:",
+            'product_description': "Aşağıdaki ürün için açıklama yaz:\n\nÜrün: {topic}\n\nAçıklama:"
+        }
+    
+    def generate(self, topic: str, domain: str = 'technology', 
+                content_type: str = 'article', **kwargs) -> str:
+        """Çoklu domain içerik üretimi"""
+        model = self.models.get(domain, self.models['technology'])
+        prompt = self.prompt_templates[content_type].format(topic=topic)
+        
+        return model.generate_content(prompt, **kwargs)
+    
+    def batch_generate(self, topics: List[str], domain: str = 'technology',
+                      content_type: str = 'article') -> List[str]:
+        """Toplu içerik üretimi"""
+        results = []
+        for topic in topics:
+            content = self.generate(topic, domain, content_type)
+            results.append({
+                'topic': topic,
+                'content': content,
+                'length': len(content.split()),
+                'estimated_read_time': len(content.split()) / 200  # dakika
+            })
+        return results
+
+# Kullanım örneği
+generator = MultiDomainContentGenerator()
+
+# Makale oluşturma
+article = generator.generate(
+    topic="Yapay Zeka ile Finansal Tahmin",
+    domain="finance",
+    content_type="article",
+    max_length=1000,
+    temperature=0.8
+)
+
+# Video senaryosu
+script = generator.generate(
+    topic="Blockchain Teknolojisi",
+    domain="technology",
+    content_type="video_script",
+    max_length=800
+)
+3. CNN ve GAN ile Logo Tasarımı
+python
+# muco_logo_gan.py
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image, ImageDraw
+import io
+
+class LogoGenerator:
+    def __init__(self, latent_dim=100, img_size=128):
+        self.latent_dim = latent_dim
+        self.img_size = img_size
+        self.generator = self.build_generator()
+        self.discriminator = self.build_discriminator()
+        self.gan = self.build_gan()
+        
+    def build_generator(self):
+        """Generator modeli"""
+        model = keras.Sequential([
+            layers.Dense(8 * 8 * 256, use_bias=False, input_shape=(self.latent_dim,)),
+            layers.BatchNormalization(),
+            layers.LeakyReLU(alpha=0.2),
+            
+            layers.Reshape((8, 8, 256)),
+            
+            layers.Conv2DTranspose(128, (5, 5), strides=(2, 2), padding='same', use_bias=False),
+            layers.BatchNormalization(),
+            layers.LeakyReLU(alpha=0.2),
+            
+            layers.Conv2DTranspose(64, (5, 5), strides=(2, 2), padding='same', use_bias=False),
+            layers.BatchNormalization(),
+            layers.LeakyReLU(alpha=0.2),
+            
+            layers.Conv2DTranspose(32, (5, 5), strides=(2, 2), padding='same', use_bias=False),
+            layers.BatchNormalization(),
+            layers.LeakyReLU(alpha=0.2),
+            
+            layers.Conv2DTranspose(3, (5, 5), strides=(2, 2), padding='same', 
+                                  use_bias=False, activation='tanh')
+        ])
+        
+        return model
+    
+    def build_discriminator(self):
+        """Discriminator modeli"""
+        model = keras.Sequential([
+            layers.Conv2D(64, (5, 5), strides=(2, 2), padding='same',
+                         input_shape=[self.img_size, self.img_size, 3]),
+            layers.LeakyReLU(alpha=0.2),
+            layers.Dropout(0.3),
+            
+            layers.Conv2D(128, (5, 5), strides=(2, 2), padding='same'),
+            layers.LeakyReLU(alpha=0.2),
+            layers.Dropout(0.3),
+            
+            layers.Conv2D(256, (5, 5), strides=(2, 2), padding='same'),
+            layers.LeakyReLU(alpha=0.2),
+            layers.Dropout(0.3),
+            
+            layers.Flatten(),
+            layers.Dense(1, activation='sigmoid')
+        ])
+        
+        return model
+    
+    def build_gan(self):
+        """GAN modeli"""
+        self.discriminator.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=0.0002, beta_1=0.5),
+            loss='binary_crossentropy',
+            metrics=['accuracy']
+        )
+        
+        self.discriminator.trainable = False
+        
+        gan_input = layers.Input(shape=(self.latent_dim,))
+        gan_output = self.discriminator(self.generator(gan_input))
+        
+        gan = keras.Model(gan_input, gan_output)
+        gan.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=0.0002, beta_1=0.5),
+            loss='binary_crossentropy'
+        )
+        
+        return gan
+    
+    def train(self, dataset, epochs=100, batch_size=64):
+        """GAN eğitimi"""
+        real_labels = np.ones((batch_size, 1))
+        fake_labels = np.zeros((batch_size, 1))
+        
+        for epoch in range(epochs):
+            # Real images batch
+            idx = np.random.randint(0, dataset.shape[0], batch_size)
+            real_images = dataset[idx]
+            
+            # Generate fake images
+            noise = np.random.normal(0, 1, (batch_size, self.latent_dim))
+            fake_images = self.generator.predict(noise, verbose=0)
+            
+            # Train discriminator
+            d_loss_real = self.discriminator.train_on_batch(real_images, real_labels)
+            d_loss_fake = self.discriminator.train_on_batch(fake_images, fake_labels)
+            d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+            
+            # Train generator
+            noise = np.random.normal(0, 1, (batch_size, self.latent_dim))
+            g_loss = self.gan.train_on_batch(noise, real_labels)
+            
+            if epoch % 100 == 0:
+                print(f"Epoch {epoch}, D Loss: {d_loss[0]}, G Loss: {g_loss}")
+                self.generate_and_save_samples(epoch)
+    
+    def generate_logo(self, style_vector=None, n_samples=1):
+        """Logo üretimi"""
+        if style_vector is None:
+            style_vector = np.random.normal(0, 1, (n_samples, self.latent_dim))
+        
+        logos = self.generator.predict(style_vector, verbose=0)
+        return logos
+    
+    def style_mixing(self, style1, style2, mix_ratio=0.5):
+        """Stil karıştırma"""
+        mixed_style = style1 * mix_ratio + style2 * (1 - mix_ratio)
+        return self.generate_logo(mixed_style.reshape(1, -1))
+    
+    def generate_and_save_samples(self, epoch, n_samples=16):
+        """Örnek logolar üret ve kaydet"""
+        noise = np.random.normal(0, 1, (n_samples, self.latent_dim))
+        generated = self.generator.predict(noise, verbose=0)
+        
+        fig, axes = plt.subplots(4, 4, figsize=(10, 10))
+        for i, ax in enumerate(axes.flatten()):
+            ax.imshow((generated[i] * 0.5 + 0.5))
+            ax.axis('off')
+        
+        plt.tight_layout()
+        plt.savefig(f'logo_samples_epoch_{epoch}.png')
+        plt.close()
+
+class LogoProcessor:
+    def __init__(self):
+        self.colors = {
+            'technology': ['#2563eb', '#3b82f6', '#60a5fa'],
+            'finance': ['#059669', '#10b981', '#34d399'],
+            'health': ['#dc2626', '#ef4444', '#f87171'],
+            'creative': ['#7c3aed', '#8b5cf6', '#a78bfa']
+        }
+        
+        self.shapes = ['circle', 'square', 'triangle', 'abstract']
+    
+    def create_simple_logo(self, company_name, sector='technology', shape='abstract'):
+        """Basit logo oluşturma"""
+        img = Image.new('RGB', (256, 256), color='white')
+        draw = ImageDraw.Draw(img)
+        
+        # Renk paleti
+        palette = self.colors.get(sector, self.colors['technology'])
+        
+        # Şekil çiz
+        if shape == 'circle':
+            draw.ellipse([50, 50, 200, 200], fill=palette[0], outline=palette[1], width=5)
+        elif shape == 'square':
+            draw.rectangle([50, 50, 200, 200], fill=palette[0], outline=palette[1], width=5)
+        elif shape == 'triangle':
+            draw.polygon([(128, 50), (200, 200), (50, 200)], fill=palette[0])
+        else:  # abstract
+            for i in range(10):
+                x = np.random.randint(0, 256)
+                y = np.random.randint(0, 256)
+                r = np.random.randint(20, 80)
+                draw.ellipse([x-r, y-r, x+r, y+r], 
+                            fill=palette[i % len(palette)],
+                            outline=palette[(i+1) % len(palette)], 
+                            width=2)
+        
+        return img
+
+# Kullanım örneği
+processor = LogoProcessor()
+logo = processor.create_simple_logo("MUCO Tech", "technology", "abstract")
+logo.save("muco_logo.png")
+4. Video İçerik Analizi için CNN-LSTM Modeli
+python
+# muco_video_analysis.py
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+import cv2
+import numpy as np
+from sklearn.model_selection import train_test_split
+import os
+
+class VideoContentAnalyzer:
+    def __init__(self, frame_size=(224, 224), sequence_length=30):
+        self.frame_size = frame_size
+        self.sequence_length = sequence_length
+        self.model = None
+        
+    def build_cnn_lstm_model(self, num_classes):
+        """CNN-LSTM modeli"""
+        # CNN feature extractor
+        cnn_input = layers.Input(shape=(self.frame_size[0], self.frame_size[1], 3))
+        
+        x = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(cnn_input)
+        x = layers.MaxPooling2D((2, 2))(x)
+        
+        x = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(x)
+        x = layers.MaxPooling2D((2, 2))(x)
+        
+        x = layers.Conv2D(256, (3, 3), activation='relu', padding='same')(x)
+        x = layers.MaxPooling2D((2, 2))(x)
+        
+        x = layers.GlobalAveragePooling2D()(x)
+        
+        cnn_model = keras.Model(cnn_input, x)
+        
+        # LSTM sequence processor
+        sequence_input = layers.Input(shape=(self.sequence_length, self.frame_size[0], self.frame_size[1], 3))
+        
+        # TimeDistributed CNN
+        x = layers.TimeDistributed(cnn_model)(sequence_input)
+        
+        # LSTM layers
+        x = layers.LSTM(128, return_sequences=True, dropout=0.3)(x)
+        x = layers.LSTM(64, dropout=0.3)(x)
+        
+        # Classification head
+        x = layers.Dense(64, activation='relu')(x)
+        x = layers.Dropout(0.5)(x)
+        output = layers.Dense(num_classes, activation='softmax')(x)
+        
+        model = keras.Model(sequence_input, output)
+        
+        model.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=0.0001),
+            loss='categorical_crossentropy',
+            metrics=['accuracy', keras.metrics.Precision(), keras.metrics.Recall()]
+        )
+        
+        return model
+    
+    def extract_frames(self, video_path, max_frames=100):
+        """Videodan frame çıkarma"""
+        cap = cv2.VideoCapture(video_path)
+        frames = []
+        
+        while len(frames) < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # Resize ve normalizasyon
+            frame = cv2.resize(frame, self.frame_size)
+            frame = frame / 255.0
+            frames.append(frame)
+        
+        cap.release()
+        
+        # Sequence oluşturma
+        if len(frames) >= self.sequence_length:
+            sequences = []
+            for i in range(len(frames) - self.sequence_length + 1):
+                sequence = frames[i:i + self.sequence_length]
+                sequences.append(sequence)
+            
+            return np.array(sequences)
+        else:
+            # Padding
+            padding = [np.zeros_like(frames[0])] * (self.sequence_length - len(frames))
+            sequence = frames + padding
+            return np.array([sequence])
+    
+    def predict_video_category(self, video_path, categories):
+        """Video kategorisi tahmini"""
+        if self.model is None:
+            raise ValueError("Model eğitilmemiş!")
+        
+        sequences = self.extract_frames(video_path)
+        predictions = self.model.predict(sequences, verbose=0)
+        
+        avg_prediction = np.mean(predictions, axis=0)
+        
+        results = []
+        for i, (cat, prob) in enumerate(zip(categories, avg_prediction)):
+            results.append({
+                'category': cat,
+                'probability': float(prob),
+                'confidence': 'High' if prob > 0.7 else 'Medium' if prob > 0.4 else 'Low'
+            })
+        
+        return sorted(results, key=lambda x: x['probability'], reverse=True)
+    
+    def train(self, video_dir, labels, epochs=50, batch_size=16):
+        """Model eğitimi"""
+        # Veri yükleme
+        X, y = self.load_video_data(video_dir, labels)
+        
+        # Train-test split
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+        
+        # Model oluştur
+        num_classes = len(np.unique(np.argmax(y, axis=1)))
+        self.model = self.build_cnn_lstm_model(num_classes)
+        
+        # Callbacks
+        callbacks = [
+            keras.callbacks.EarlyStopping(
+                monitor='val_loss',
+                patience=15,
+                restore_best_weights=True
+            ),
+            keras.callbacks.ReduceLROnPlateau(
+                monitor='val_loss',
+                factor=0.5,
+                patience=10
+            ),
+            keras.callbacks.ModelCheckpoint(
+                'best_video_model.h5',
+                monitor='val_accuracy',
+                save_best_only=True
+            )
+        ]
+        
+        # Eğitim
+        history = self.model.fit(
+            X_train, y_train,
+            validation_data=(X_val, y_val),
+            epochs=epochs,
+            batch_size=batch_size,
+            callbacks=callbacks,
+            verbose=1
+        )
+        
+        return history
+    
+    def load_video_data(self, video_dir, labels):
+        """Video verilerini yükleme"""
+        X = []
+        y = []
+        
+        for label_idx, category in enumerate(labels.keys()):
+            category_dir = os.path.join(video_dir, category)
+            
+            for video_file in os.listdir(category_dir)[:100]:  # İlk 100 video
+                video_path = os.path.join(category_dir, video_file)
+                
+                try:
+                    sequences = self.extract_frames(video_path)
+                    
+                    for sequence in sequences:
+                        X.append(sequence)
+                        
+                        # One-hot encoding label
+                        label = np.zeros(len(labels))
+                        label[label_idx] = 1
+                        y.append(label)
+                except Exception as e:
+                    print(f"Error processing {video_path}: {e}")
+        
+        return np.array(X), np.array(y)
+
+class VideoContentOptimizer:
+    def __init__(self):
+        self.engagement_factors = {
+            'duration': 0.3,
+            'pace': 0.25,
+            'visual_quality': 0.2,
+            'audio_quality': 0.15,
+            'topic_relevance': 0.1
+        }
+    
+    def analyze_video_performance(self, video_metrics):
+        """Video performans analizi"""
+        score = 0
+        recommendations = []
+        
+        # Duration analysis
+        if 120 <= video_metrics.get('duration_seconds', 0) <= 600:
+            score += 0.3 * self.engagement_factors['duration']
+        else:
+            recommendations.append("Video süresi 2-10 dakika arasında olmalı")
+        
+        # Pace analysis (cut frequency)
+        cut_frequency = video_metrics.get('cut_frequency', 0)
+        if 3 <= cut_frequency <= 10:
+            score += 0.25 * self.engagement_factors['pace']
+        else:
+            recommendations.append("Sahne geçişleri optimizasyonu gerekli")
+        
+        # Visual quality
+        if video_metrics.get('resolution', 0) >= 1080:
+            score += 0.2 * self.engagement_factors['visual_quality']
+        else:
+            recommendations.append("1080p veya üzeri çözünürlük önerilir")
+        
+        # Audio quality
+        if video_metrics.get('audio_quality_score', 0) >= 0.8:
+            score += 0.15 * self.engagement_factors['audio_quality']
+        else:
+            recommendations.append("Ses kalitesi iyileştirilmeli")
+        
+        # Topic relevance
+        if video_metrics.get('topic_score', 0) >= 0.7:
+            score += 0.1 * self.engagement_factors['topic_relevance']
+        else:
+            recommendations.append("İçerik konuyla daha uyumlu olmalı")
+        
+        return {
+            'engagement_score': score,
+            'grade': 'A' if score >= 0.8 else 'B' if score >= 0.6 else 'C' if score >= 0.4 else 'D',
+            'recommendations': recommendations,
+            'estimated_views': self.estimate_views(score, video_metrics.get('subscribers', 1000))
+        }
+    
+    def estimate_views(self, engagement_score, subscribers):
+        """Tahmini izlenme sayısı"""
+        base_views = subscribers * 0.1  % subscribers or subscribers * 0.01
+        
+        if engagement_score >= 0.8:
+            multiplier = 2.5
+        elif engagement_score >= 0.6:
+            multiplier = 1.5
+        elif engagement_score >= 0.4:
+            multiplier = 1.0
+        else:
+            multiplier = 0.5
+        
+        return int(base_views * multiplier * (1 + engagement_score))
+
+# Kullanım örneği
+optimizer = VideoContentOptimizer()
+
+video_metrics = {
+    'duration_seconds': 300,
+    'cut_frequency': 5,
+    'resolution': 1080,
+    'audio_quality_score': 0.85,
+    'topic_score': 0.9,
+    'subscribers': 50000
+}
+
+analysis = optimizer.analyze_video_performance(video_metrics)
+print(f"Engagement Score: {analysis['engagement_score']:.2f}")
+print(f"Grade: {analysis['grade']}")
+print(f"Estimated Views: {analysis['estimated_views']}")
+5. Entegre MUCO Platformu için Ana Sınıf
+python
+# muco_platform.py
+import json
+from typing import Dict, List, Any
+import pandas as pd
+
+class MUCOPlatform:
+    def __init__(self):
+        self.finance_model = FinancialLSTM()
+        self.content_generator = MultiDomainContentGenerator()
+        self.logo_generator = LogoGenerator()
+        self.video_analyzer = VideoContentAnalyzer()
+        self.optimizer = VideoContentOptimizer()
+        
+        self.user_profiles = {}
+        self.content_history = []
+        
+    def create_project(self, project_name: str, project_type: str, 
+                      requirements: Dict[str, Any]) -> Dict[str, Any]:
+        """Yeni proje oluşturma"""
+        project = {
+            'name': project_name,
+            'type': project_type,
+            'requirements': requirements,
+            'created_at': pd.Timestamp.now(),
+            'status': 'active',
+            'components': {}
+        }
+        
+        # Proje tipine göre bileşenler oluştur
+        if project_type == 'content_marketing':
+            project['components'] = self.create_content_plan(requirements)
+        elif project_type == 'brand_identity':
+            project['components'] = self.create_brand_identity(requirements)
+        elif project_type == 'financial_analysis':
+            project['components'] = self.create_financial_report(requirements)
+        
+        return project
+    
+    def create_content_plan(self, requirements: Dict[str, Any]) -> Dict[str, Any]:
+        """İçerik planı oluşturma"""
+        topics = requirements.get('topics', [])
+        domain = requirements.get('domain', 'technology')
+        
+        # İçerik üretimi
+        articles = self.content_generator.batch_generate(
+            topics=topics[:5],
+            domain=domain,
+            content_type='article'
+        )
+        
+        video_scripts = self.content_generator.batch_generate(
+            topics=topics[:3],
+            domain=domain,
+            content_type='video_script'
+        )
+        
+        social_posts = self.content_generator.batch_generate(
+            topics=topics,
+            domain=domain,
+            content_type='social_media'
+        )
+        
+        return {
+            'articles': articles,
+            'video_scripts': video_scripts,
+            'social_posts': social_posts,
+            'content_calendar': self.generate_content_calendar(topics),
+            'seo_keywords': self.extract_keywords(topics)
+        }
+    
+    def create_brand_identity(self, requirements: Dict[str, Any]) -> Dict[str, Any]:
+        """Marka kimliği oluşturma"""
+        company_name = requirements.get('company_name', '')
+        sector = requirements.get('sector', 'technology')
+        
+        # Logo önerileri
+        logo_styles = ['minimal', 'modern', 'vintage', 'abstract']
+        logos = []
+        
+        for style in logo_styles[:3]:
+            logo = self.logo_generator.create_simple_logo(company_name, sector, style)
+            logos.append({
+                'style': style,
+                'image': logo,
+                'color_palette': self.logo_generator.colors.get(sector, ['#000000', '#FFFFFF'])
+            })
+        
+        # Marka rehberi
+        brand_guide = {
+            'colors': self.logo_generator.colors.get(sector, ['#000000', '#FFFFFF']),
+            'fonts': ['Inter', 'Roboto', 'Montserrat', 'Open Sans'],
+            'typography': self.create_typography_guide(sector),
+            'voice_tone': self.determine_brand_voice(sector),
+            'mission_statement': self.generate_mission_statement(company_name, sector)
+        }
+        
+        return {
+            'logos': logos,
+            'brand_guide': brand_guide,
+            'website_mockup': self.create_website_mockup(company_name, sector),
+            'social_media_kit': self.create_social_media_kit(brand_guide)
+        }
+    
+    def create_financial_report(self, requirements: Dict[str, Any]) -> Dict[str, Any]:
+        """Finansal rapor oluşturma"""
+        symbol = requirements.get('symbol', 'AAPL')
+        period = requirements.get('period', '1y')
+        
+        # Veri çekme
+        df = self.finance_model.prepare_data(symbol, period)
+        
+        # Tahminler
+        features = ['Close', 'SMA_20', 'SMA_50', 'RSI', 'MACD', 'Volatility']
+        data = df[features].values
+        
+        # Model eğitimi (hızlı)
+        try:
+            self.finance_model.train(symbol, epochs=10)
+            
+            # Tahminler
+            predictions = self.finance_model.predict(data, days_ahead=30)
+            
+            # Risk analizi
+            risk_metrics = self.calculate_risk_metrics(df)
+            
+            # Öneriler
+            recommendations = self.generate_investment_recommendations(df, predictions)
+            
+            return {
+                'historical_data': df.tail(100).to_dict(),
+                'predictions': predictions,
+                'risk_metrics': risk_metrics,
+                'recommendations': recommendations,
+                'technical_indicators': self.calculate_technical_indicators(df),
+                'market_sentiment': self.analyze_market_sentiment(symbol)
+            }
+        except Exception as e:
+            return {
+                'error': str(e),
+                'historical_data': df.tail(100).to_dict()
+            }
+    
+    def calculate_risk_metrics(self, df: pd.DataFrame) -> Dict[str, float]:
+        """Risk metrikleri hesaplama"""
+        returns = df['Close'].pct_change().dropna()
+        
+        return {
+            'volatility': returns.std() * np.sqrt(252),
+            'sharpe_ratio': (returns.mean() * 252) / (returns.std() * np.sqrt(252)),
+            'max_drawdown': self.calculate_max_drawdown(df['Close']),
+            'var_95': returns.quantile(0.05),
+            'cvar_95': returns[returns <= returns.quantile(0.05)].mean()
+        }
+    
+    def calculate_max_drawdown(self, prices: pd.Series) -> float:
+        """Maksimum düşüş hesaplama"""
+        cummax = prices.expanding().max()
+        drawdown = (prices - cummax) / cummax
+        return drawdown.min()
+    
+    def generate_investment_recommendations(self, df: pd.DataFrame, 
+                                          predictions: List[float]) -> List[Dict[str, Any]]:
+        """Yatırım önerileri oluşturma"""
+        current_price = df['Close'].iloc[-1]
+        avg_prediction = np.mean(predictions)
+        
+        recommendations = []
+        
+        if avg_prediction > current_price * 1.1:
+            recommendations.append({
+                'action': 'BUY',
+                'confidence': 'High',
+                'reason': 'Güçlü yükseliş trendi bekleniyor',
+                'target_price': avg_prediction,
+                'stop_loss': current_price * 0.95
+            })
+        elif avg_prediction < current_price * 0.9:
+            recommendations.append({
+                'action': 'SELL',
+                'confidence': 'Medium',
+                'reason': 'Düşüş trendi bekleniyor',
+                'target_price': avg_prediction,
+                'stop_loss': current_price * 1.05
+            })
+        else:
+            recommendations.append({
+                'action': 'HOLD',
+                'confidence': 'Medium',
+                'reason': 'Yanlış hareket bekleniyor',
+                'target_price': avg_prediction,
+                'stop_loss': None
+            })
+        
+        return recommendations
+    
+    def generate_content_calendar(self, topics: List[str]) -> List[Dict[str, Any]]:
+        """İçerik takvimi oluşturma"""
+        calendar = []
+        start_date = pd.Timestamp.now()
+        
+        for i, topic in enumerate(topics[:30]):  # 30 günlük takvim
+            day = start_date + pd.Timedelta(days=i)
+            
+            content_types = ['article', 'social_media', 'video']
+            content_type = content_types[i % len(content_types)]
+            
+            calendar.append({
+                'date': day.strftime('%Y-%m-%d'),
+                'topic': topic,
+                'content_type': content_type,
+                'platforms': self.select_platforms(content_type),
+                'estimated_engagement': np.random.randint(100, 10000)
+            })
+        
+        return calendar
+    
+    def select_platforms(self, content_type: str) -> List[str]:
+        """İçerik tipine göre platform seçimi"""
+        platforms = {
+            'article': ['Medium', 'LinkedIn', 'Blog'],
+            'social_media': ['Twitter', 'Instagram', 'LinkedIn'],
+            'video': ['YouTube', 'TikTok', 'Instagram Reels']
+        }
+        return platforms.get(content_type, ['All Platforms'])
+    
+    def extract_keywords(self, topics: List[str]) -> List[Dict[str, Any]]:
+        """SEO anahtar kelimeleri çıkarma"""
+        keywords = []
+        for topic in topics:
+            words = topic.lower().split()
+            for word in words:
+                if len(word) > 3 and word not in ['with', 'this', 'that', 'what']:
+                    keywords.append({
+                        'keyword': word,
+                        'volume': np.random.randint(100, 10000),
+                        'difficulty': np.random.randint(1, 100),
+                        'cpc': np.random.uniform(0.1, 5.0)
+                    })
+        
+        # Tekrar edenleri kaldır
+        unique_keywords = {}
+        for kw in keywords:
+            if kw['keyword'] not in unique_keywords:
+                unique_keywords[kw['keyword']] = kw
+            else:
+                # Volume'u topla
+                unique_keywords[kw['keyword']]['volume'] += kw['volume']
+        
+        return sorted(unique_keywords.values(), key=lambda x: x['volume'], reverse=True)[:20]
+
+# Ana uygulama örneği
+if __name__ == "__main__":
+    # MUCO platformunu başlat
+    muco = MUCOPlatform()
+    
+    # İçerik pazarlama projesi oluştur
+    content_project = muco.create_project(
+        project_name="AI Teknolojileri İçerik Stratejisi",
+        project_type="content_marketing",
+        requirements={
+            "topics": [
+                "Yapay Zeka ile Finansal Tahmin",
+                "Makine Öğrenmesi Uygulamaları",
+                "Derin Öğrenme Modelleri",
+                "Doğal Dil İşleme",
+                "Bilgisayarlı Görü"
+            ],
+            "domain": "technology",
+            "target_audience": "Teknoloji meraklıları, geliştiriciler",
+            "budget": 5000
+        }
+    )
+    
+    # Sonuçları kaydet
+    with open('content_project.json', 'w', encoding='utf-8') as f:
+        json.dump(content_project, f, indent=2, ensure_ascii=False, default=str)
+    
+    print("Proje başarıyla oluşturuldu!")
+    print(f"Oluşturulan makaleler: {len(content_project['components']['articles'])}")
+    print(f"Oluşturulan video senaryoları: {len(content_project['components']['video_scripts'])}")
+    print(f"SEO anahtar kelimeleri: {len(content_project['components']['seo_keywords'])}")
+Kurulum ve Gereksinimler
+bash
+# Gerekli kütüphaneler
+pip install tensorflow torch torchvision transformers
+pip install yfinance pandas numpy scikit-learn matplotlib
+pip install opencv-python pillow
+pip install fastapi uvicorn
+
+# Ek NLP kütüphaneleri
+pip install nltk spacy
+python -m spacy download en_core_web_sm
+
+# GPU desteği için (opsiyonel)
+pip install tensorflow-gpu
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+Model Eğitimi için Öneriler
+Finansal Model: 5+ yıllık hisse senedi verisi ile eğitin
+
+İçerik Modeli: Domain-specific veri kümeleri ile fine-tuning yapın
+
+Logo GAN: Marka logolarından oluşan özel dataset oluşturun
+
+Video Analiz: YouTube veri kümesi veya özel video kütüphanesi kullanın
+
+Performans Optimizasyonu
+python
+# Model optimizasyonu için teknikler
+import tensorflow as tf
+
+# Mixed precision training
+tf.keras.mixed_precision.set_global_policy('mixed_float16')
+
+# GPU bellek büyümesi
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+        print(e)
+
+# Model pruning ve quantization
+import tensorflow_model_optimization as tfmot
+
+prune_low_magnitude = tfmot.sparsity.keras.prune_low_magnitude
+pruning_params = {
+    'pruning_schedule': tfmot.sparsity.keras.PolynomialDecay(
+        initial_sparsity=0.50,
+        final_sparsity=0.80,
+        begin_step=0,
+        end_step=1000
+    )
+}
+
+# Modeli quantize et
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+quantized_model = converter.convert()
+Bu genişletilmiş sinir ağı implementasyonları, MUCO platformunu güçlü bir AI destekli çözüm haline getirecektir. Her modül bağımsız olarak geliştirilebilir ve entegre edilebilir.
+
+Bu yanıt, yalnızca referans amaçlı AI tarafından oluşturulmuştur.

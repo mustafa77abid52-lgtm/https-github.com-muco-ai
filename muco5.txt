@@ -1,0 +1,2061 @@
+yukarıdaki muco aı nın internet bağlantısını kontrol panalini sesli yanıt ve yazı yazarak cevap vermesini kodla geliştir ve bundan sonra ne yapılması için öneride bulun
+We are going to create a voice-enabled AI assistant for MUCO that can respond via text and speech.
+We'll integrate internet connectivity checks and a control panel for managing the AI's functions.
+
+Steps:
+
+Create a class MUCOSpeaker for text-to-speech (TTS) and speech-to-text (STT) capabilities.
+
+Create a class MUCOInternetChecker to check internet connectivity and speed.
+
+Create a class MUCOSpeechRecognizer for listening to user commands.
+
+Create a class MUCOControlPanel that integrates everything and provides a voice-enabled control panel.
+
+We'll use the following libraries (if available, else we'll use alternatives):
+
+For TTS: we can use pyttsx3 (offline) or gTTS (online, requires internet).
+
+For STT: we can use speech_recognition (which can use Google's API or offline engines like CMU Sphinx).
+
+For internet check: we can use speedtest-cli for speed and requests for connectivity.
+
+Since we are in a code environment without guarantee of these libraries, we'll write the code with fallbacks.
+
+We are going to design the classes with the following methods:
+
+MUCOSpeaker:
+
+speak(text: str) -> None: Converts text to speech and plays it.
+
+MUCOInternetChecker:
+
+check_connectivity() -> bool: Checks if there is an active internet connection.
+
+check_speed() -> Dict[str, float]: Returns download and upload speed in Mbps.
+
+MUCOSpeechRecognizer:
+
+listen() -> str: Listens to the user's speech and returns it as text.
+
+MUCOControlPanel:
+
+process_command(command: str) -> str: Processes the command and returns a response.
+
+run() -> None: Runs the control panel in a loop.
+
+We'll also create a simple command set for the control panel, such as:
+
+"check internet": Checks internet connectivity and speed.
+
+"exit": Exits the control panel.
+
+Let's code accordingly.
+
+MUCO AI Sesli Asistan ve Kontrol Paneli
+İşte MUCO AI'nin internet bağlantısını kontrol eden, sesli yanıt veren ve yazılı cevap üreten gelişmiş kontrol paneli:
+
+python
+# muco_ai_assistant.py
+import os
+import sys
+import json
+import time
+import threading
+import queue
+import logging
+from typing import Dict, List, Any, Optional, Callable
+from dataclasses import dataclass, field
+from enum import Enum
+from datetime import datetime
+import hashlib
+import subprocess
+import platform
+import warnings
+warnings.filterwarnings('ignore')
+
+# Ses işleme kütüphaneleri
+try:
+    import speech_recognition as sr
+    import pyttsx3
+    import pyaudio
+    SPEECH_SUPPORT = True
+except ImportError:
+    SPEECH_SUPPORT = False
+    print("Ses kütüphaneleri yüklenemedi. Sesli özellikler devre dışı.")
+
+# Web ve ağ kütüphaneleri
+import requests
+import socket
+import speedtest
+import ping3
+import psutil
+from urllib.parse import urlparse
+
+# GUI için
+try:
+    import tkinter as tk
+    from tkinter import ttk, scrolledtext, messagebox
+    import tkinter.font as tkFont
+    GUI_SUPPORT = True
+except ImportError:
+    GUI_SUPPORT = False
+    print("Tkinter yüklenemedi. GUI devre dışı.")
+
+# Veri görselleştirme
+try:
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    import plotly.graph_objects as go
+    import plotly.io as pio
+    VISUALIZATION_SUPPORT = True
+except ImportError:
+    VISUALIZATION_SUPPORT = False
+
+logger = logging.getLogger(__name__)
+
+class AssistantMode(Enum):
+    """Asistan modları"""
+    VOICE_ONLY = "voice_only"
+    TEXT_ONLY = "text_only"
+    HYBRID = "hybrid"
+    SILENT = "silent"
+
+class ConnectionStatus(Enum):
+    """İnternet bağlantı durumu"""
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+    LIMITED = "limited"
+    UNKNOWN = "unknown"
+
+class VoicePersonality(Enum):
+    """Ses kişiliği"""
+    PROFESSIONAL = "professional"
+    FRIENDLY = "friendly"
+    TECHNICAL = "technical"
+    CASUAL = "casual"
+
+@dataclass
+class NetworkMetrics:
+    """Ağ metrikleri"""
+    download_speed_mbps: float = 0.0
+    upload_speed_mbps: float = 0.0
+    ping_ms: float = 0.0
+    jitter_ms: float = 0.0
+    packet_loss_percent: float = 0.0
+    latency_ms: float = 0.0
+    bandwidth_mbps: float = 0.0
+    connection_stability: float = 0.0  # 0-100 arası
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "download_speed_mbps": self.download_speed_mbps,
+            "upload_speed_mbps": self.upload_speed_mbps,
+            "ping_ms": self.ping_ms,
+            "jitter_ms": self.jitter_ms,
+            "packet_loss_percent": self.packet_loss_percent,
+            "latency_ms": self.latency_ms,
+            "bandwidth_mbps": self.bandwidth_mbps,
+            "connection_stability": self.connection_stability
+        }
+
+@dataclass
+class SystemHealth:
+    """Sistem sağlık durumu"""
+    cpu_percent: float = 0.0
+    memory_percent: float = 0.0
+    disk_percent: float = 0.0
+    network_io_sent_mb: float = 0.0
+    network_io_recv_mb: float = 0.0
+    temperature_c: float = 0.0
+    uptime_hours: float = 0.0
+    process_count: int = 0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "cpu_percent": self.cpu_percent,
+            "memory_percent": self.memory_percent,
+            "disk_percent": self.disk_percent,
+            "network_io_sent_mb": self.network_io_sent_mb,
+            "network_io_recv_mb": self.network_io_recv_mb,
+            "temperature_c": self.temperature_c,
+            "uptime_hours": self.uptime_hours,
+            "process_count": self.process_count
+        }
+
+class MUCOSpeechEngine:
+    """MUCO Ses Motoru"""
+    
+    def __init__(self, voice_personality: VoicePersonality = VoicePersonality.PROFESSIONAL):
+        """
+        Ses motoru başlatma
+        
+        Args:
+            voice_personality: Ses kişiliği
+        """
+        self.voice_personality = voice_personality
+        self.engine = None
+        self.recognizer = None
+        self.microphone = None
+        self.is_listening = False
+        self.command_queue = queue.Queue()
+        self.response_queue = queue.Queue()
+        
+        # Ses motorunu başlat
+        self._initialize_speech_engine()
+        
+        # Ses kişiliğine göre konuşma stilleri
+        self.personality_styles = {
+            VoicePersonality.PROFESSIONAL: {
+                "rate": 180,
+                "volume": 0.9,
+                "voice_id": "english-us",
+                "phrases": {
+                    "greeting": "Merhaba, MUCO Asistanınız sizin için hazır.",
+                    "listening": "Dinliyorum...",
+                    "processing": "İşliyorum...",
+                    "error": "Üzgünüm, bunu işleyemedim."
+                }
+            },
+            VoicePersonality.FRIENDLY: {
+                "rate": 160,
+                "volume": 1.0,
+                "voice_id": "english",
+                "phrases": {
+                    "greeting": "Hey! Ben MUCO, size nasıl yardımcı olabilirim?",
+                    "listening": "Sizi dinliyorum!",
+                    "processing": "Hemen bakıyorum...",
+                    "error": "Oops! Sanırım bir şeyler ters gitti."
+                }
+            },
+            VoicePersonality.TECHNICAL: {
+                "rate": 200,
+                "volume": 0.8,
+                "voice_id": "english",
+                "phrases": {
+                    "greeting": "MUCO AI Sistem Operatörü aktif. Teknik destek için hazır.",
+                    "listening": "Komut alımı aktif.",
+                    "processing": "İşlem devam ediyor.",
+                    "error": "Sistem hatası: Komut işlenemedi."
+                }
+            },
+            VoicePersonality.CASUAL: {
+                "rate": 150,
+                "volume": 1.0,
+                "voice_id": "turkish",
+                "phrases": {
+                    "greeting": "Selam! Ben MUCO, neler yapalım?",
+                    "listening": "Tamam, seni dinliyorum.",
+                    "processing": "Bir saniye...",
+                    "error": "Bunu anlayamadım, tekrar söyler misin?"
+                }
+            }
+        }
+        
+        logger.info(f"Ses motoru başlatıldı: {voice_personality.value}")
+    
+    def _initialize_speech_engine(self):
+        """Ses motorunu başlat"""
+        if not SPEECH_SUPPORT:
+            logger.warning("Ses kütüphaneleri yüklenemedi. Sesli özellikler devre dışı.")
+            return
+        
+        try:
+            # Text-to-Speech engine
+            self.engine = pyttsx3.init()
+            
+            # Speech Recognition
+            self.recognizer = sr.Recognizer()
+            self.microphone = sr.Microphone()
+            
+            # Gürültü ayarı
+            with self.microphone as source:
+                self.recognizer.adjust_for_ambient_noise(source, duration=1)
+            
+            logger.info("Ses motoru başarıyla başlatıldı")
+            
+        except Exception as e:
+            logger.error(f"Ses motoru başlatılamadı: {str(e)}")
+            self.engine = None
+            self.recognizer = None
+    
+    def speak(self, text: str, async_mode: bool = False):
+        """
+        Metni seslendir
+        
+        Args:
+            text: Seslendirilecek metin
+            async_mode: Eşzamanlı mod
+        """
+        if not self.engine:
+            logger.warning("TTS motoru kullanılamıyor")
+            return
+        
+        try:
+            # Ses ayarlarını kişiliğe göre yap
+            style = self.personality_styles[self.voice_personality]
+            self.engine.setProperty('rate', style["rate"])
+            self.engine.setProperty('volume', style["volume"])
+            
+            # Seslendir
+            if async_mode:
+                # Arka planda seslendir
+                def speak_async():
+                    self.engine.say(text)
+                    self.engine.runAndWait()
+                
+                thread = threading.Thread(target=speak_async, daemon=True)
+                thread.start()
+            else:
+                self.engine.say(text)
+                self.engine.runAndWait()
+                
+            logger.debug(f"Seslendirildi: {text[:50]}...")
+            
+        except Exception as e:
+            logger.error(f"Seslendirme hatası: {str(e)}")
+    
+    def listen(self, timeout: int = 5, phrase_time_limit: int = 10) -> Optional[str]:
+        """
+        Mikrofondan ses dinle
+        
+        Args:
+            timeout: Dinleme timeout'u (saniye)
+            phrase_time_limit: Maksimum konuşma süresi
+            
+        Returns:
+            Tanınan metin veya None
+        """
+        if not self.recognizer or not self.microphone:
+            logger.warning("Ses tanıma motoru kullanılamıyor")
+            return None
+        
+        try:
+            with self.microphone as source:
+                logger.info("Dinliyorum...")
+                audio = self.recognizer.listen(
+                    source, 
+                    timeout=timeout,
+                    phrase_time_limit=phrase_time_limit
+                )
+            
+            # Google Speech Recognition
+            text = self.recognizer.recognize_google(audio, language="tr-TR")
+            logger.info(f"Tanındı: {text}")
+            return text
+            
+        except sr.WaitTimeoutError:
+            logger.warning("Dinleme timeout'u")
+            return None
+        except sr.UnknownValueError:
+            logger.warning("Ses anlaşılamadı")
+            return None
+        except sr.RequestError as e:
+            logger.error(f"Ses tanıma servisi hatası: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"Dinleme hatası: {str(e)}")
+            return None
+    
+    def start_continuous_listening(self, callback: Callable[[str], None]):
+        """
+        Sürekli dinleme başlat
+        
+        Args:
+            callback: Tanınan metin için callback fonksiyonu
+        """
+        def listen_loop():
+            self.is_listening = True
+            while self.is_listening:
+                text = self.listen(timeout=3)
+                if text:
+                    callback(text)
+                time.sleep(0.1)
+        
+        thread = threading.Thread(target=listen_loop, daemon=True)
+        thread.start()
+        logger.info("Sürekli dinleme başlatıldı")
+    
+    def stop_continuous_listening(self):
+        """Sürekli dinlemeyi durdur"""
+        self.is_listening = False
+        logger.info("Sürekli dinleme durduruldu")
+    
+    def change_personality(self, personality: VoicePersonality):
+        """
+        Ses kişiliğini değiştir
+        
+        Args:
+            personality: Yeni kişilik
+        """
+        self.voice_personality = personality
+        logger.info(f"Ses kişiliği değiştirildi: {personality.value}")
+    
+    def get_available_voices(self) -> List[Dict[str, Any]]:
+        """Kullanılabilir sesleri listele"""
+        if not self.engine:
+            return []
+        
+        voices = []
+        for voice in self.engine.getProperty('voices'):
+            voices.append({
+                "id": voice.id,
+                "name": voice.name,
+                "languages": voice.languages,
+                "gender": voice.gender
+            })
+        
+        return voices
+    
+    def set_voice(self, voice_id: str):
+        """
+        Ses seç
+        
+        Args:
+            voice_id: Ses ID'si
+        """
+        if not self.engine:
+            return
+        
+        try:
+            voices = self.engine.getProperty('voices')
+            for voice in voices:
+                if voice.id == voice_id:
+                    self.engine.setProperty('voice', voice.id)
+                    logger.info(f"Ses değiştirildi: {voice.name}")
+                    return
+            
+            logger.warning(f"Ses bulunamadı: {voice_id}")
+        except Exception as e:
+            logger.error(f"Ses değiştirme hatası: {str(e)}")
+
+class MUCOInternetChecker:
+    """MUCO İnternet Bağlantı Kontrolü"""
+    
+    def __init__(self, check_interval: int = 60):
+        """
+        İnternet kontrol başlatma
+        
+        Args:
+            check_interval: Kontrol aralığı (saniye)
+        """
+        self.check_interval = check_interval
+        self.is_monitoring = False
+        self.monitoring_thread = None
+        self.connection_history = []
+        self.speedtest_history = []
+        self.max_history_size = 100
+        
+        # Kontrol noktaları
+        self.check_points = [
+            "8.8.8.8",  # Google DNS
+            "1.1.1.1",  # Cloudflare DNS
+            "www.google.com",
+            "www.cloudflare.com",
+            "www.microsoft.com"
+        ]
+        
+        logger.info("İnternet kontrol başlatıldı")
+    
+    def check_connectivity(self) -> Dict[str, Any]:
+        """
+        İnternet bağlantısını kontrol et
+        
+        Returns:
+            Bağlantı durumu bilgisi
+        """
+        results = []
+        total_success = 0
+        
+        for check_point in self.check_points:
+            try:
+                # Ping test
+                if "." in check_point:  # IP adresi
+                    response_time = ping3.ping(check_point, timeout=2)
+                else:  # Domain
+                    # DNS çözümleme
+                    socket.gethostbyname(check_point)
+                    response_time = ping3.ping(check_point, timeout=2)
+                
+                status = "connected" if response_time is not None else "failed"
+                success = 1 if response_time is not None else 0
+                total_success += success
+                
+                results.append({
+                    "check_point": check_point,
+                    "status": status,
+                    "response_time_ms": response_time * 1000 if response_time else None,
+                    "timestamp": datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                results.append({
+                    "check_point": check_point,
+                    "status": "failed",
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat()
+                })
+        
+        # Genel durum
+        success_rate = (total_success / len(self.check_points)) * 100
+        overall_status = "connected" if success_rate > 50 else "disconnected"
+        
+        result = {
+            "overall_status": overall_status,
+            "success_rate": success_rate,
+            "check_points": results,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Geçmişe kaydet
+        self.connection_history.append(result)
+        if len(self.connection_history) > self.max_history_size:
+            self.connection_history.pop(0)
+        
+        logger.info(f"İnternet bağlantı kontrolü: {overall_status} ({success_rate:.1f}%)")
+        return result
+    
+    def check_speed(self) -> Optional[NetworkMetrics]:
+        """
+        İnternet hız testi yap
+        
+        Returns:
+            Ağ metrikleri veya None
+        """
+        try:
+            logger.info("Hız testi başlatılıyor...")
+            
+            st = speedtest.Speedtest()
+            st.get_best_server()
+            
+            # Download test
+            download_speed = st.download() / 1_000_000  # Mbps
+            
+            # Upload test
+            upload_speed = st.upload() / 1_000_000  # Mbps
+            
+            # Ping
+            ping_result = st.results.ping
+            
+            # Jitter (basit hesaplama)
+            jitter = abs(ping_result - st.results.server["latency"])
+            
+            metrics = NetworkMetrics(
+                download_speed_mbps=download_speed,
+                upload_speed_mbps=upload_speed,
+                ping_ms=ping_result,
+                jitter_ms=jitter,
+                packet_loss_percent=0.0,  # speedtest bu bilgiyi sağlamıyor
+                latency_ms=ping_result,
+                bandwidth_mbps=download_speed,
+                connection_stability=95.0  # Varsayılan
+            )
+            
+            # Geçmişe kaydet
+            self.speedtest_history.append({
+                "metrics": metrics.to_dict(),
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            if len(self.speedtest_history) > self.max_history_size:
+                self.speedtest_history.pop(0)
+            
+            logger.info(f"Hız testi tamamlandı: {download_speed:.1f} Mbps indirme")
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Hız testi hatası: {str(e)}")
+            return None
+    
+    def check_latency(self, host: str = "8.8.8.8", count: int = 5) -> Dict[str, Any]:
+        """
+        Gecikme (latency) testi yap
+        
+        Args:
+            host: Test edilecek host
+            count: Ping sayısı
+            
+        Returns:
+            Latency sonuçları
+        """
+        try:
+            latencies = []
+            
+            for i in range(count):
+                response_time = ping3.ping(host, timeout=2)
+                if response_time:
+                    latencies.append(response_time * 1000)  # ms'ye çevir
+                time.sleep(0.5)
+            
+            if latencies:
+                avg_latency = sum(latencies) / len(latencies)
+                min_latency = min(latencies)
+                max_latency = max(latencies)
+                jitter = max_latency - min_latency
+                
+                result = {
+                    "host": host,
+                    "avg_latency_ms": avg_latency,
+                    "min_latency_ms": min_latency,
+                    "max_latency_ms": max_latency,
+                    "jitter_ms": jitter,
+                    "packet_loss_percent": ((count - len(latencies)) / count) * 100,
+                    "successful_pings": len(latencies),
+                    "total_pings": count,
+                    "timestamp": datetime.now().isoformat()
+                }
+            else:
+                result = {
+                    "host": host,
+                    "error": "Tüm ping'ler başarısız",
+                    "packet_loss_percent": 100.0,
+                    "timestamp": datetime.now().isoformat()
+                }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Latency test hatası: {str(e)}")
+            return {"host": host, "error": str(e), "timestamp": datetime.now().isoformat()}
+    
+    def check_website_status(self, url: str) -> Dict[str, Any]:
+        """
+        Website durumunu kontrol et
+        
+        Args:
+            url: Website URL'i
+            
+        Returns:
+            Website durumu
+        """
+        try:
+            start_time = time.time()
+            response = requests.get(url, timeout=10)
+            end_time = time.time()
+            
+            response_time = (end_time - start_time) * 1000  # ms
+            
+            result = {
+                "url": url,
+                "status_code": response.status_code,
+                "response_time_ms": response_time,
+                "content_length": len(response.content),
+                "headers": dict(response.headers),
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            logger.info(f"Website kontrolü: {url} - {response.status_code} ({response_time:.0f}ms)")
+            return result
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Website kontrol hatası: {url} - {str(e)}")
+            return {
+                "url": url,
+                "error": str(e),
+                "status": "unreachable",
+                "timestamp": datetime.now().isoformat()
+            }
+    
+    def start_monitoring(self, callback: Optional[Callable[[Dict], None]] = None):
+        """
+        Sürekli izleme başlat
+        
+        Args:
+            callback: Her kontrol sonrası çağrılacak fonksiyon
+        """
+        def monitoring_loop():
+            self.is_monitoring = True
+            while self.is_monitoring:
+                try:
+                    # Bağlantı kontrolü
+                    connectivity = self.check_connectivity()
+                    
+                    # Hız testi (her 5 kontrolte bir)
+                    if len(self.connection_history) % 5 == 0:
+                        speed = self.check_speed()
+                        if speed:
+                            connectivity["speed_test"] = speed.to_dict()
+                    
+                    if callback:
+                        callback(connectivity)
+                    
+                except Exception as e:
+                    logger.error(f"İzleme hatası: {str(e)}")
+                
+                time.sleep(self.check_interval)
+        
+        self.monitoring_thread = threading.Thread(target=monitoring_loop, daemon=True)
+        self.monitoring_thread.start()
+        logger.info(f"İnternet izleme başlatıldı (aralık: {self.check_interval}s)")
+    
+    def stop_monitoring(self):
+        """İzlemeyi durdur"""
+        self.is_monitoring = False
+        if self.monitoring_thread:
+            self.monitoring_thread.join(timeout=5)
+        logger.info("İnternet izleme durduruldu")
+    
+    def get_connection_history(self, hours: int = 24) -> List[Dict[str, Any]]:
+        """
+        Bağlantı geçmişini getir
+        
+        Args:
+            hours: Saat cinsinden geçmiş
+            
+        Returns:
+            Bağlantı geçmişi
+        """
+        cutoff_time = datetime.now().timestamp() - (hours * 3600)
+        
+        history = []
+        for record in self.connection_history:
+            record_time = datetime.fromisoformat(record["timestamp"]).timestamp()
+            if record_time >= cutoff_time:
+                history.append(record)
+        
+        return history
+    
+    def get_speed_history(self, hours: int = 24) -> List[Dict[str, Any]]:
+        """
+        Hız testi geçmişini getir
+        
+        Args:
+            hours: Saat cinsinden geçmiş
+            
+        Returns:
+            Hız testi geçmişi
+        """
+        cutoff_time = datetime.now().timestamp() - (hours * 3600)
+        
+        history = []
+        for record in self.speedtest_history:
+            record_time = datetime.fromisoformat(record["timestamp"]).timestamp()
+            if record_time >= cutoff_time:
+                history.append(record)
+        
+        return history
+
+class MUCOAIAssistant:
+    """MUCO AI Asistan Ana Sınıfı"""
+    
+    def __init__(self, 
+                 name: str = "MUCO",
+                 mode: AssistantMode = AssistantMode.HYBRID,
+                 voice_personality: VoicePersonality = VoicePersonality.PROFESSIONAL):
+        """
+        AI Asistan başlatma
+        
+        Args:
+            name: Asistan adı
+            mode: Asistan modu
+            voice_personality: Ses kişiliği
+        """
+        self.name = name
+        self.mode = mode
+        self.voice_personality = voice_personality
+        self.is_active = False
+        self.command_history = []
+        self.response_history = []
+        
+        # Modülleri başlat
+        self.speech_engine = MUCOSpeechEngine(voice_personality) if SPEECH_SUPPORT else None
+        self.internet_checker = MUCOInternetChecker()
+        self.system_health = SystemHealth()
+        
+        # Komut işleyicileri
+        self.command_handlers = {
+            "internet": self._handle_internet_command,
+            "system": self._handle_system_command,
+            "help": self._handle_help_command,
+            "settings": self._handle_settings_command,
+            "ai": self._handle_ai_command,
+            "control": self._handle_control_command
+        }
+        
+        # AI analiz modülü (önceki koddan)
+        self.ai_analyzer = None
+        
+        logger.info(f"MUCO AI Asistan başlatıldı: {name}")
+    
+    def start(self):
+        """Asistanı başlat"""
+        self.is_active = True
+        
+        # İnternet izlemeyi başlat
+        self.internet_checker.start_monitoring(self._monitoring_callback)
+        
+        # Sesli asistanı başlat
+        if self.mode in [AssistantMode.VOICE_ONLY, AssistantMode.HYBRID] and self.speech_engine:
+            self.speech_engine.speak(f"{self.name} Asistan aktif. Size nasıl yardımcı olabilirim?")
+            
+            # Sürekli dinlemeyi başlat
+            self.speech_engine.start_continuous_listening(self._voice_command_handler)
+        
+        logger.info(f"Asistan başlatıldı: Mod={self.mode.value}")
+        
+        # GUI başlat
+        if GUI_SUPPORT:
+            self._start_gui()
+    
+    def stop(self):
+        """Asistanı durdur"""
+        self.is_active = False
+        
+        # İnternet izlemeyi durdur
+        self.internet_checker.stop_monitoring()
+        
+        # Sesli dinlemeyi durdur
+        if self.speech_engine:
+            self.speech_engine.stop_continuous_listening()
+        
+        logger.info("Asistan durduruldu")
+    
+    def process_command(self, command: str, voice_response: bool = True) -> str:
+        """
+        Komut işle
+        
+        Args:
+            command: Kullanıcı komutu
+            voice_response: Sesli yanıt verilsin mi
+            
+        Returns:
+            Yanıt metni
+        """
+        try:
+            # Komutu geçmişe kaydet
+            self.command_history.append({
+                "command": command,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Komutu analiz et
+            command_lower = command.lower()
+            
+            # Anahtar kelimelere göre komutu yönlendir
+            handler = None
+            for keyword in self.command_handlers.keys():
+                if keyword in command_lower:
+                    handler = self.command_handlers[keyword]
+                    break
+            
+            if handler:
+                response = handler(command_lower)
+            else:
+                response = self._handle_general_command(command_lower)
+            
+            # Yanıtı geçmişe kaydet
+            self.response_history.append({
+                "command": command,
+                "response": response,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Sesli yanıt
+            if voice_response and self.speech_engine and self.mode != AssistantMode.TEXT_ONLY:
+                self.speech_engine.speak(response, async_mode=True)
+            
+            logger.info(f"Komut işlendi: {command[:50]}...")
+            return response
+            
+        except Exception as e:
+            error_msg = f"Komut işleme hatası: {str(e)}"
+            logger.error(error_msg)
+            
+            if self.speech_engine and self.mode != AssistantMode.TEXT_ONLY:
+                self.speech_engine.speak("Üzgünüm, bu komutu işleyemedim.")
+            
+            return error_msg
+    
+    def _monitoring_callback(self, connectivity_data: Dict[str, Any]):
+        """İzleme callback fonksiyonu"""
+        # İnternet kesintisi tespiti
+        if connectivity_data["overall_status"] == "disconnected":
+            alert_msg = "Uyarı: İnternet bağlantısı kesildi!"
+            logger.warning(alert_msg)
+            
+            if self.speech_engine and self.mode != AssistantMode.SILENT:
+                self.speech_engine.speak(alert_msg)
+    
+    def _voice_command_handler(self, command_text: str):
+        """Sesli komut işleyici"""
+        response = self.process_command(command_text, voice_response=True)
+        
+        # GUI'ye bildir (eğer varsa)
+        if hasattr(self, 'gui') and self.gui:
+            self.gui.add_to_conversation(f"Sen: {command_text}")
+            self.gui.add_to_conversation(f"{self.name}: {response}")
+    
+    def _handle_internet_command(self, command: str) -> str:
+        """İnternet komutlarını işle"""
+        if "hız" in command or "speed" in command:
+            # Hız testi
+            response = "İnternet hızını test ediyorum, lütfen bekleyin..."
+            
+            if self.speech_engine:
+                self.speech_engine.speak(response)
+            
+            speed_result = self.internet_checker.check_speed()
+            
+            if speed_result:
+                response = (f"Test tamamlandı. "
+                          f"İndirme hızı: {speed_result.download_speed_mbps:.1f} Mbps, "
+                          f"Yükleme hızı: {speed_result.upload_speed_mbps:.1f} Mbps, "
+                          f"Ping: {speed_result.ping_ms:.0f} ms")
+            else:
+                response = "Hız testi başarısız oldu."
+        
+        elif "bağlantı" in command or "connection" in command:
+            # Bağlantı kontrolü
+            connectivity = self.internet_checker.check_connectivity()
+            
+            if connectivity["overall_status"] == "connected":
+                success_rate = connectivity["success_rate"]
+                response = (f"İnternet bağlantınız aktif. "
+                          f"Başarı oranı: %{success_rate:.1f}")
+            else:
+                response = "İnternet bağlantınızda sorun var."
+        
+        elif "ping" in command:
+            # Ping testi
+            latency_result = self.internet_checker.check_latency()
+            
+            if "avg_latency_ms" in latency_result:
+                response = (f"Ping testi tamamlandı. "
+                          f"Ortalama gecikme: {latency_result['avg_latency_ms']:.0f} ms")
+            else:
+                response = "Ping testi başarısız oldu."
+        
+        elif "website" in command or "site" in command:
+            # Website kontrolü
+            # Komuttan URL çıkarmaya çalış
+            import re
+            urls = re.findall(r'(https?://\S+)', command)
+            
+            if urls:
+                url = urls[0]
+                website_status = self.internet_checker.check_website_status(url)
+                
+                if "status_code" in website_status:
+                    response = (f"{url} sitesi ulaşılabilir durumda. "
+                              f"Yanıt kodu: {website_status['status_code']}, "
+                              f"Yanıt süresi: {website_status['response_time_ms']:.0f} ms")
+                else:
+                    response = f"{url} sitesine ulaşılamıyor."
+            else:
+                response = "Lütfen kontrol etmek istediğiniz website adresini belirtin."
+        
+        else:
+            response = "İnternet ile ilgili ne yapmak istiyorsunuz? Hız testi, bağlantı kontrolü veya ping testi yapabilirim."
+        
+        return response
+    
+    def _handle_system_command(self, command: str) -> str:
+        """Sistem komutlarını işle"""
+        try:
+            # CPU kullanımı
+            cpu_percent = psutil.cpu_percent(interval=1)
+            
+            # Bellek kullanımı
+            memory = psutil.virtual_memory()
+            memory_percent = memory.percent
+            
+            # Disk kullanımı
+            disk = psutil.disk_usage('/')
+            disk_percent = disk.percent
+            
+            # Ağ I/O
+            net_io = psutil.net_io_counters()
+            net_sent_mb = net_io.bytes_sent / (1024 * 1024)
+            net_recv_mb = net_io.bytes_recv / (1024 * 1024)
+            
+            # Sistem açık kalma süresi
+            uptime_seconds = time.time() - psutil.boot_time()
+            uptime_hours = uptime_seconds / 3600
+            
+            # İşlem sayısı
+            process_count = len(psutil.p_processes())
+            
+            # Sıcaklık (Linux için)
+            temp_c = 0
+            if platform.system() == "Linux":
+                try:
+                    with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+                        temp_c = float(f.read()) / 1000
+                except:
+                    pass
+            
+            self.system_health = SystemHealth(
+                cpu_percent=cpu_percent,
+                memory_percent=memory_percent,
+                disk_percent=disk_percent,
+                network_io_sent_mb=net_sent_mb,
+                network_io_recv_mb=net_recv_mb,
+                temperature_c=temp_c,
+                uptime_hours=uptime_hours,
+                process_count=process_count
+            )
+            
+            # Duruma göre yanıt oluştur
+            health_status = "iyi"
+            if cpu_percent > 80 or memory_percent > 80:
+                health_status = "kritik"
+            elif cpu_percent > 60 or memory_percent > 60:
+                health_status = "yüksek"
+            
+            response = (f"Sistem durumu: {health_status}. "
+                      f"CPU: %{cpu_percent:.1f}, "
+                      f"Bellek: %{memory_percent:.1f}, "
+                      f"Disk: %{disk_percent:.1f}, "
+                      f"Sistem {uptime_hours:.1f} saattir açık.")
+            
+            # Eğer kritikse öneri ekle
+            if health_status == "kritik":
+                response += " Sistem kaynakları tükenmek üzere. Bazı uygulamaları kapatmanız önerilir."
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Sistem kontrol hatası: {str(e)}")
+            return "Sistem durumunu kontrol ederken bir hata oluştu."
+    
+    def _handle_ai_command(self, command: str) -> str:
+        """AI komutlarını işle"""
+        if "model" in command and ("analiz" in command or "analyze" in command):
+            # AI model analizi
+            if not self.ai_analyzer:
+                from muco_ai_model_analyzer import MUCOAIModelAnalyzer
+                self.ai_analyzer = MUCOAIModelAnalyzer()
+            
+            # Komuttan model adını çıkarmaya çalış
+            model_name = "bert-base-uncased"  # Varsayılan
+            
+            if "gpt" in command:
+                model_name = "openai-gpt"
+            elif "bert" in command:
+                model_name = "bert-base-uncased"
+            elif "resnet" in command:
+                model_name = "resnet50"
+            
+            response = f"{model_name} modelini analiz ediyorum..."
+            
+            if self.speech_engine:
+                self.speech_engine.speak(response)
+            
+            try:
+                analysis = self.ai_analyzer.analyze_huggingface_model(model_name)
+                
+                params = analysis["metadata"]["parameters"]["total"]
+                params_billion = params / 1e9
+                
+                response = (f"{model_name} analizi tamamlandı. "
+                          f"Toplam parametre: {params_billion:.1f} milyar. "
+                          f"Model mimarisi: {analysis['metadata']['model_type']}")
+                
+            except Exception as e:
+                response = f"Model analizi başarısız: {str(e)}"
+        
+        elif "geliştir" in command or "develop" in command:
+            # AI model geliştirme önerileri
+            response = ("AI model geliştirme için önerilerim:\n"
+                       "1. Transformer mimarileri üzerine odaklanın\n"
+                       "2. Quantization ile model boyutunu küçültün\n"
+                       "3. Transfer learning ile mevcut modelleri fine-tune edin\n"
+                       "4. Attention mekanizmalarını optimize edin\n"
+                       "5. Distributed training ile eğitim süresini azaltın")
+        
+        else:
+            response = "AI ile ilgili ne yapmak istiyorsunuz? Model analizi veya geliştirme önerileri alabilirsiniz."
+        
+        return response
+    
+    def _handle_control_command(self, command: str) -> str:
+        """Kontrol komutlarını işle"""
+        if "ses" in command and ("aç" in command or "kapat" in command):
+            # Ses kontrolü
+            if "aç" in command:
+                self.mode = AssistantMode.HYBRID
+                response = "Sesli asistan aktif edildi."
+            else:
+                self.mode = AssistantMode.TEXT_ONLY
+                response = "Sesli asistan devre dışı bırakıldı."
+        
+        elif "kişilik" in command or "personality" in command:
+            # Kişilik değiştirme
+            if "arkadaş" in command or "friendly" in command:
+                self.voice_personality = VoicePersonality.FRIENDLY
+                response = "Kişilik arkadaş canlısı olarak değiştirildi."
+            elif "profesyonel" in command or "professional" in command:
+                self.voice_personality = VoicePersonality.PROFESSIONAL
+                response = "Kişilik profesyonel olarak değiştirildi."
+            elif "teknik" in command or "technical" in command:
+                self.voice_personality = VoicePersonality.TECHNICAL
+                response = "Kişilik teknik olarak değiştirildi."
+            else:
+                response = "Hangi kişiliği seçmek istiyorsunuz? Profesyonel, arkadaş canlısı veya teknik."
+        
+        elif "rapor" in command or "report" in command:
+            # Sistem raporu oluştur
+            response = self._generate_system_report()
+        
+        else:
+            response = "Kontrol ile ilgili ne yapmak istiyorsunuz? Ses ayarları, kişilik değişikliği veya sistem raporu alabilirsiniz."
+        
+        # Ses motorunu güncelle
+        if self.speech_engine:
+            self.speech_engine.change_personality(self.voice_personality)
+        
+        return response
+    
+    def _handle_help_command(self, command: str) -> str:
+        """Yardım komutlarını işle"""
+        help_text = """
+MUCO AI Asistan Komutları:
+
+📡 İNTERNET KOMUTLARI:
+- "İnternet hızını test et"
+- "Bağlantı durumunu kontrol et"
+- "Ping testi yap"
+- "Website kontrol et [URL]"
+
+💻 SİSTEM KOMUTLARI:
+- "Sistem durumunu göster"
+- "CPU kullanımını kontrol et"
+- "Bellek durumunu göster"
+
+🤖 AI KOMUTLARI:
+- "AI model analiz et [model adı]"
+- "AI geliştirme önerileri"
+
+⚙️ KONTROL KOMUTLARI:
+- "Sesli asistanı aç/kapat"
+- "Kişilik değiştir"
+- "Sistem raporu oluştur"
+
+❓ YARDIM KOMUTLARI:
+- "Komutları listele"
+- "Ne yapabilirsin?"
+- "Yardım al"
+
+Her zaman buradayım! Nasıl yardımcı olabilirim? 😊
+        """
+        return help_text
+    
+    def _handle_settings_command(self, command: str) -> str:
+        """Ayarlar komutlarını işle"""
+        # Mevcut ayarları göster
+        current_settings = {
+            "mod": self.mode.value,
+            "ses_kişiliği": self.voice_personality.value,
+            "asistan_adı": self.name,
+            "internet_kontrol_aralığı": f"{self.internet_checker.check_interval} saniye"
+        }
+        
+        settings_text = "Mevcut Ayarlar:\n"
+        for key, value in current_settings.items():
+            settings_text += f"  • {key}: {value}\n"
+        
+        settings_text += "\nAyarları değiştirmek için 'kontrol' komutlarını kullanın."
+        
+        return settings_text
+    
+    def _handle_general_command(self, command: str) -> str:
+        """Genel komutları işle"""
+        # Selamlama
+        if any(word in command for word in ["merhaba", "selam", "hey", "hi", "hello"]):
+            responses = [
+                f"Merhaba! Ben {self.name}, size nasıl yardımcı olabilirim?",
+                "Selam! MUCO Asistanınız burada. Ne yapalım?",
+                "Hey! Ben {self.name}. Bugün size nasıl yardımcı olabilirim?"
+            ]
+            import random
+            return random.choice(responses).format(name=self.name)
+        
+        # Teşekkür
+        elif any(word in command for word in ["teşekkür", "sağol", "thanks", "thank you"]):
+            responses = [
+                "Rica ederim! Başka bir şeye ihtiyacınız var mı?",
+                "Ne demek! Her zaman buradayım.",
+                "Benim için bir zevk! Size nasıl daha fazla yardımcı olabilirim?"
+            ]
+            import random
+            return random.choice(responses)
+        
+        # Saat
+        elif any(word in command for word in ["saat", "time", "zaman"]):
+            current_time = datetime.now().strftime("%H:%M")
+            return f"Şu an saat {current_time}."
+        
+        # Tarih
+        elif any(word in command for word in ["tarih", "date", "gün"]):
+            current_date = datetime.now().strftime("%d %B %Y")
+            return f"Bugün {current_date}."
+        
+        # Ne yapabilir?
+        elif any(word in command for word in ["ne yapabilirsin", "what can you do", "özellikler"]):
+            return ("Size şu konularda yardımcı olabilirim:\n"
+                   "• İnternet bağlantı kontrolü ve hız testi\n"
+                   "• Sistem durumu izleme\n"
+                   "• AI model analizi\n"
+                   "• Sesli ve yazılı asistanlık\n"
+                   "Detaylı komutlar için 'yardım' yazın.")
+        
+        # Varsayılan yanıt
+        else:
+            responses = [
+                "Bunu anlayamadım. 'Yardım' yazarak neler yapabileceğimi öğrenebilirsiniz.",
+                "Sanırım bu komutu henüz desteklemiyorum. Başka nasıl yardımcı olabilirim?",
+                "Üzgünüm, bu komutu işleyemedim. 'Komutları listele' diyerek desteklediğim komutları görebilirsiniz."
+            ]
+            import random
+            return random.choice(responses)
+    
+    def _generate_system_report(self) -> str:
+        """Sistem raporu oluştur"""
+        try:
+            # Sistem bilgilerini topla
+            system_info = {
+                "platform": platform.platform(),
+                "processor": platform.processor(),
+                "python_version": platform.python_version(),
+                "memory_total_gb": psutil.virtual_memory().total / (1024**3),
+                "disk_total_gb": psutil.disk_usage('/').total / (1024**3)
+            }
+            
+            # İnternet geçmişi
+            connection_history = self.internet_checker.get_connection_history(1)  # Son 1 saat
+            if connection_history:
+                success_rates = [h["success_rate"] for h in connection_history]
+                avg_success_rate = sum(success_rates) / len(success_rates)
+            else:
+                avg_success_rate = 0
+            
+            # Rapor oluştur
+            report = f"""
+📊 MUCO SİSTEM RAPORU
+────────────────────────
+⏰ Rapor Zamanı: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+💻 SİSTEM BİLGİLERİ:
+• Platform: {system_info['platform']}
+• İşlemci: {system_info['processor'][:50]}...
+• Python: {system_info['python_version']}
+• Bellek: {system_info['memory_total_gb']:.1f} GB
+• Disk: {system_info['disk_total_gb']:.1f} GB
+
+📡 İNTERNET DURUMU:
+• Ortalama Bağlantı Oranı: %{avg_success_rate:.1f}
+• Son Kontrol: {connection_history[-1]['timestamp'] if connection_history else 'Yok'}
+• İzleme Aktif: {'Evet' if self.internet_checker.is_monitoring else 'Hayır'}
+
+🤖 ASİSTAN DURUMU:
+• Mod: {self.mode.value}
+• Ses Kişiliği: {self.voice_personality.value}
+• Komut Geçmişi: {len(self.command_history)} komut
+• Aktif Durum: {'Evet' if self.is_active else 'Hayır'}
+
+🎯 ÖNERİLER:
+1. Düzenli yedekleme yapın
+2. Sistem güncellemelerini kontrol edin
+3. İnternet bağlantınızı optimize edin
+4. Kaynak kullanımını izleyin
+
+────────────────────────
+Rapor oluşturuldu: {self.name} AI Asistan
+            """
+            
+            # Raporu dosyaya kaydet
+            filename = f"muco_system_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(report)
+            
+            return f"Sistem raporu oluşturuldu ve '{filename}' dosyasına kaydedildi."
+            
+        except Exception as e:
+            logger.error(f"Rapor oluşturma hatası: {str(e)}")
+            return "Sistem raporu oluşturulurken bir hata oluştu."
+    
+    def _start_gui(self):
+        """GUI başlat"""
+        if not GUI_SUPPORT:
+            logger.warning("GUI desteklenmiyor")
+            return
+        
+        # GUI'yi ayrı thread'te başlat
+        gui_thread = threading.Thread(target=self._run_gui, daemon=True)
+        gui_thread.start()
+    
+    def _run_gui(self):
+        """GUI çalıştır"""
+        class MUCOAssistantGUI:
+            def __init__(self, assistant):
+                self.assistant = assistant
+                self.root = tk.Tk()
+                self.setup_gui()
+            
+            def setup_gui(self):
+                """GUI'yi kur"""
+                self.root.title(f"MUCO AI Asistan - {self.assistant.name}")
+                self.root.geometry("1000x700")
+                self.root.configure(bg='#1e1e1e')
+                
+                # Fontlar
+                title_font = tkFont.Font(family="Segoe UI", size=16, weight="bold")
+                text_font = tkFont.Font(family="Segoe UI", size=10)
+                
+                # Başlık
+                title_frame = tk.Frame(self.root, bg='#252526')
+                title_frame.pack(fill=tk.X, padx=10, pady=10)
+                
+                tk.Label(
+                    title_frame,
+                    text=f"🤖 {self.assistant.name} AI Asistan",
+                    font=title_font,
+                    bg='#252526',
+                    fg='#ffffff'
+                ).pack(side=tk.LEFT)
+                
+                # Durum göstergesi
+                status_frame = tk.Frame(title_frame, bg='#252526')
+                status_frame.pack(side=tk.RIGHT)
+                
+                self.status_label = tk.Label(
+                    status_frame,
+                    text="🟢 Aktif",
+                    font=text_font,
+                    bg='#252526',
+                    fg='#4ec9b0'
+                )
+                self.status_label.pack()
+                
+                # Ana içerik alanı
+                main_frame = tk.Frame(self.root, bg='#1e1e1e')
+                main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                
+                # Sol panel - Kontroller
+                left_panel = tk.Frame(main_frame, bg='#252526', width=300)
+                left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+                left_panel.pack_propagate(False)
+                
+                # Kontrol butonları
+                control_frame = tk.Frame(left_panel, bg='#252526')
+                control_frame.pack(fill=tk.X, padx=10, pady=10)
+                
+                tk.Label(
+                    control_frame,
+                    text="⚙️ KONTROLLER",
+                    font=text_font,
+                    bg='#252526',
+                    fg='#569cd6'
+                ).pack(anchor=tk.W)
+                
+                # Butonlar
+                buttons = [
+                    ("🌐 İnternet Testi", self.run_internet_test),
+                    ("💻 Sistem Durumu", self.run_system_check),
+                    ("📊 Hız Testi", self.run_speed_test),
+                    ("📈 Grafikler", self.show_graphs),
+                    ("⚡ Hızlı Komutlar", self.show_quick_commands)
+                ]
+                
+                for text, command in buttons:
+                    btn = tk.Button(
+                        control_frame,
+                        text=text,
+                        command=command,
+                        bg='#3c3c3c',
+                        fg='#ffffff',
+                        activebackground='#505050',
+                        activeforeground='#ffffff',
+                        relief=tk.FLAT,
+                        font=text_font,
+                        padx=10,
+                        pady=5
+                    )
+                    btn.pack(fill=tk.X, pady=2)
+                
+                # Sistem bilgileri
+                info_frame = tk.Frame(left_panel, bg='#252526')
+                info_frame.pack(fill=tk.X, padx=10, pady=10)
+                
+                tk.Label(
+                    info_frame,
+                    text="📊 SİSTEM BİLGİLERİ",
+                    font=text_font,
+                    bg='#252526',
+                    fg='#569cd6'
+                ).pack(anchor=tk.W)
+                
+                self.cpu_label = tk.Label(
+                    info_frame,
+                    text="CPU: --%",
+                    font=text_font,
+                    bg='#252526',
+                    fg='#cccccc'
+                )
+                self.cpu_label.pack(anchor=tk.W)
+                
+                self.memory_label = tk.Label(
+                    info_frame,
+                    text="Bellek: --%",
+                    font=text_font,
+                    bg='#252526',
+                    fg='#cccccc'
+                )
+                self.memory_label.pack(anchor=tk.W)
+                
+                self.disk_label = tk.Label(
+                    info_frame,
+                    text="Disk: --%",
+                    font=text_font,
+                    bg='#252526',
+                    fg='#cccccc'
+                )
+                self.disk_label.pack(anchor=tk.W)
+                
+                # Sağ panel - Konuşma ve çıktı
+                right_panel = tk.Frame(main_frame, bg='#1e1e1e')
+                right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+                
+                # Konuşma geçmişi
+                tk.Label(
+                    right_panel,
+                    text="💭 KONUŞMA GEÇMİŞİ",
+                    font=text_font,
+                    bg='#1e1e1e',
+                    fg='#569cd6'
+                ).pack(anchor=tk.W, padx=5, pady=(0, 5))
+                
+                self.conversation_text = scrolledtext.ScrolledText(
+                    right_panel,
+                    bg='#252526',
+                    fg='#cccccc',
+                    insertbackground='#ffffff',
+                    font=text_font,
+                    height=20,
+                    wrap=tk.WORD
+                )
+                self.conversation_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 10))
+                
+                # Komut girişi
+                input_frame = tk.Frame(right_panel, bg='#1e1e1e')
+                input_frame.pack(fill=tk.X, padx=5, pady=5)
+                
+                self.command_entry = tk.Entry(
+                    input_frame,
+                    bg='#3c3c3c',
+                    fg='#ffffff',
+                    insertbackground='#ffffff',
+                    font=text_font,
+                    relief=tk.FLAT
+                )
+                self.command_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+                self.command_entry.bind('<Return>', self.send_command)
+                
+                tk.Button(
+                    input_frame,
+                    text="Gönder",
+                    command=self.send_command,
+                    bg='#0e639c',
+                    fg='#ffffff',
+                    activebackground='#1177bb',
+                    activeforeground='#ffffff',
+                    relief=tk.FLAT,
+                    font=text_font
+                ).pack(side=tk.RIGHT)
+                
+                # Ses kontrolü
+                voice_frame = tk.Frame(right_panel, bg='#1e1e1e')
+                voice_frame.pack(fill=tk.X, padx=5, pady=5)
+                
+                self.voice_var = tk.BooleanVar(value=self.assistant.mode != AssistantMode.TEXT_ONLY)
+                voice_check = tk.Checkbutton(
+                    voice_frame,
+                    text="Sesli Yanıt",
+                    variable=self.voice_var,
+                    command=self.toggle_voice,
+                    bg='#1e1e1e',
+                    fg='#cccccc',
+                    activebackground='#1e1e1e',
+                    activeforeground='#cccccc',
+                    selectcolor='#1e1e1e',
+                    font=text_font
+                )
+                voice_check.pack(side=tk.LEFT)
+                
+                # Mikrofon butonu
+                self.mic_button = tk.Button(
+                    voice_frame,
+                    text="🎤 Konuş",
+                    command=self.start_voice_input,
+                    bg='#3c3c3c',
+                    fg='#ffffff',
+                    activebackground='#505050',
+                    activeforeground='#ffffff',
+                    relief=tk.FLAT,
+                    font=text_font
+                )
+                self.mic_button.pack(side=tk.RIGHT)
+                
+                # Sistem izleme başlat
+                self.update_system_info()
+                
+                # Hoş geldin mesajı
+                self.add_to_conversation(f"{self.assistant.name}: Merhaba! Ben {self.assistant.name} AI Asistanınız. Size nasıl yardımcı olabilirim?")
+            
+            def add_to_conversation(self, text: str):
+                """Konuşmaya metin ekle"""
+                self.conversation_text.insert(tk.END, text + "\n\n")
+                self.conversation_text.see(tk.END)
+                self.conversation_text.update()
+            
+            def send_command(self, event=None):
+                """Komut gönder"""
+                command = self.command_entry.get().strip()
+                if not command:
+                    return
+                
+                self.command_entry.delete(0, tk.END)
+                self.add_to_conversation(f"Sen: {command}")
+                
+                # Komutu işle
+                response = self.assistant.process_command(
+                    command, 
+                    voice_response=self.voice_var.get()
+                )
+                
+                self.add_to_conversation(f"{self.assistant.name}: {response}")
+            
+            def start_voice_input(self):
+                """Sesli giriş başlat"""
+                if not self.assistant.speech_engine:
+                    messagebox.showwarning("Uyarı", "Ses özellikleri kullanılamıyor.")
+                    return
+                
+                self.mic_button.config(text="🎤 Dinleniyor...", bg='#d16969')
+                self.root.update()
+                
+                # Dinle
+                text = self.assistant.speech_engine.listen(timeout=5)
+                
+                self.mic_button.config(text="🎤 Konuş", bg='#3c3c3c')
+                
+                if text:
+                    self.command_entry.delete(0, tk.END)
+                    self.command_entry.insert(0, text)
+                    self.send_command()
+            
+            def toggle_voice(self):
+                """Sesli yanıtı aç/kapat"""
+                if self.voice_var.get():
+                    self.assistant.mode = AssistantMode.HYBRID
+                else:
+                    self.assistant.mode = AssistantMode.TEXT_ONLY
+            
+            def run_internet_test(self):
+                """İnternet testi çalıştır"""
+                self.add_to_conversation(f"{self.assistant.name}: İnternet bağlantınız kontrol ediliyor...")
+                
+                result = self.assistant.internet_checker.check_connectivity()
+                
+                if result["overall_status"] == "connected":
+                    response = f"✅ İnternet bağlantınız aktif. Başarı oranı: %{result['success_rate']:.1f}"
+                else:
+                    response = "❌ İnternet bağlantınızda sorun var."
+                
+                self.add_to_conversation(f"{self.assistant.name}: {response}")
+                
+                if self.voice_var.get() and self.assistant.speech_engine:
+                    self.assistant.speech_engine.speak(response)
+            
+            def run_system_check(self):
+                """Sistem kontrolü çalıştır"""
+                response = self.assistant._handle_system_command("sistem durumu")
+                self.add_to_conversation(f"{self.assistant.name}: {response}")
+            
+            def run_speed_test(self):
+                """Hız testi çalıştır"""
+                self.add_to_conversation(f"{self.assistant.name}: İnternet hızınız test ediliyor, lütfen bekleyin...")
+                
+                result = self.assistant.internet_checker.check_speed()
+                
+                if result:
+                    response = (f"📊 Hız testi tamamlandı:\n"
+                              f"• İndirme: {result.download_speed_mbps:.1f} Mbps\n"
+                              f"• Yükleme: {result.upload_speed_mbps:.1f} Mbps\n"
+                              f"• Ping: {result.ping_ms:.0f} ms")
+                else:
+                    response = "❌ Hız testi başarısız oldu."
+                
+                self.add_to_conversation(f"{self.assistant.name}: {response}")
+            
+            def show_graphs(self):
+                """Grafikleri göster"""
+                if not VISUALIZATION_SUPPORT:
+                    messagebox.showinfo("Bilgi", "Grafik özellikleri kullanılamıyor.")
+                    return
+                
+                # Yeni pencere
+                graph_window = tk.Toplevel(self.root)
+                graph_window.title("MUCO - Sistem Grafikleri")
+                graph_window.geometry("800x600")
+                
+                # Bağlantı geçmişi grafiği
+                history = self.assistant.internet_checker.get_connection_history(24)
+                
+                if history:
+                    times = [datetime.fromisoformat(h["timestamp"]).strftime("%H:%M") 
+                            for h in history[-20:]]  # Son 20 kayıt
+                    rates = [h["success_rate"] for h in history[-20:]]
+                    
+                    fig, ax = plt.subplots(figsize=(8, 4))
+                    ax.plot(times, rates, marker='o', color='#4ec9b0', linewidth=2)
+                    ax.set_title('İnternet Bağlantı Başarı Oranı (Son 24 Saat)')
+                    ax.set_xlabel('Zaman')
+                    ax.set_ylabel('Başarı Oranı (%)')
+                    ax.grid(True, alpha=0.3)
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    
+                    canvas = FigureCanvasTkAgg(fig, graph_window)
+                    canvas.draw()
+                    canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                else:
+                    tk.Label(
+                        graph_window,
+                        text="Yeterli veri bulunamadı.",
+                        font=tkFont.Font(family="Segoe UI", size=12)
+                    ).pack(pady=50)
+            
+            def show_quick_commands(self):
+                """Hızlı komutları göster"""
+                commands_window = tk.Toplevel(self.root)
+                commands_window.title("Hızlı Komutlar")
+                commands_window.geometry("400x500")
+                
+                commands = [
+                    ("🌐 İnternet", [
+                        "• İnternet hızını test et",
+                        "• Bağlantı durumunu kontrol et",
+                        "• Ping testi yap"
+                    ]),
+                    ("💻 Sistem", [
+                        "• Sistem durumunu göster",
+                        "• CPU kullanımını kontrol et",
+                        "• Bellek durumunu göster"
+                    ]),
+                    ("🤖 AI", [
+                        "• AI model analiz et",
+                        "• AI geliştirme önerileri"
+                    ]),
+                    ("⚙️ Kontrol", [
+                        "• Sesli asistanı aç/kapat",
+                        "• Kişilik değiştir",
+                        "• Sistem raporu oluştur"
+                    ])
+                ]
+                
+                for category, cmd_list in commands:
+                    frame = tk.Frame(commands_window)
+                    frame.pack(fill=tk.X, padx=10, pady=5)
+                    
+                    tk.Label(
+                        frame,
+                        text=category,
+                        font=tkFont.Font(family="Segoe UI", size=11, weight="bold")
+                    ).pack(anchor=tk.W)
+                    
+                    for cmd in cmd_list:
+                        cmd_frame = tk.Frame(frame)
+                        cmd_frame.pack(fill=tk.X, padx=10, pady=2)
+                        
+                        tk.Label(
+                            cmd_frame,
+                            text=cmd,
+                            font=tkFont.Font(family="Segoe UI", size=9)
+                        ).pack(side=tk.LEFT)
+                        
+                        # Kopyala butonu
+                        tk.Button(
+                            cmd_frame,
+                            text="Kopyala",
+                            command=lambda c=cmd.split("• ")[1] if "• " in cmd else cmd: self.copy_to_clipboard(c),
+                            font=tkFont.Font(family="Segoe UI", size=8),
+                            padx=5
+                        ).pack(side=tk.RIGHT)
+            
+            def copy_to_clipboard(self, text: str):
+                """Panoya kopyala"""
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+                messagebox.showinfo("Başarılı", f"Kopyalandı: {text}")
+            
+            def update_system_info(self):
+                """Sistem bilgilerini güncelle"""
+                try:
+                    cpu = psutil.cpu_percent(interval=1)
+                    memory = psutil.virtual_memory().percent
+                    disk = psutil.disk_usage('/').percent
+                    
+                    self.cpu_label.config(
+                        text=f"CPU: {cpu:.1f}%",
+                        fg='#4ec9b0' if cpu < 70 else '#d16969' if cpu < 90 else '#f44747'
+                    )
+                    
+                    self.memory_label.config(
+                        text=f"Bellek: {memory:.1f}%",
+                        fg='#4ec9b0' if memory < 70 else '#d16969' if memory < 90 else '#f44747'
+                    )
+                    
+                    self.disk_label.config(
+                        text=f"Disk: {disk:.1f}%",
+                        fg='#4ec9b0' if disk < 70 else '#d16969' if disk < 90 else '#f44747'
+                    )
+                    
+                except:
+                    pass
+                
+                # 5 saniyede bir güncelle
+                self.root.after(5000, self.update_system_info)
+            
+            def run(self):
+                """GUI'yi çalıştır"""
+                self.root.mainloop()
+        
+        # GUI'yi başlat
+        self.gui = MUCOAssistantGUI(self)
+        self.gui.run()
+
+# Ana çalıştırıcı
+def main():
+    """Ana fonksiyon"""
+    print("""
+    ╔══════════════════════════════════════════╗
+    ║         🤖 MUCO AI ASİSTAN              ║
+    ║         Versiyon 2.0                    ║
+    ╚══════════════════════════════════════════╝
+    
+    Özellikler:
+    • 🌐 İnternet bağlantı kontrolü
+    • 📊 Hız testi ve ping kontrolü
+    • 💻 Sistem sağlığı izleme
+    • 🎤 Sesli asistan
+    • 💬 Yazılı asistan
+    • 📈 Gerçek zamanlı grafikler
+    
+    Başlatılıyor...
+    """)
+    
+    # Asistanı başlat
+    assistant = MUCOAIAssistant(
+        name="MUCO",
+        mode=AssistantMode.HYBRID,
+        voice_personality=VoicePersonality.FRIENDLY
+    )
+    
+    try:
+        assistant.start()
+        
+        # Komut satırı arayüzü
+        if not GUI_SUPPORT:
+            print("\nKonsol Modu Aktif")
+            print("Komut girmek için yazın (çıkmak için 'exit' yazın):")
+            print("-" * 50)
+            
+            while True:
+                try:
+                    command = input("\n>>> ").strip()
+                    
+                    if command.lower() in ['exit', 'quit', 'çıkış']:
+                        break
+                    
+                    if command:
+                        response = assistant.process_command(command, voice_response=False)
+                        print(f"\n{assistant.name}: {response}")
+                
+                except KeyboardInterrupt:
+                    print("\n\nÇıkılıyor...")
+                    break
+                except EOFError:
+                    break
+        
+        # GUI modunda bekle
+        else:
+            print("GUI başlatıldı. Pencereyi kapatarak çıkabilirsiniz.")
+            # Ana thread'in sonlanmaması için bekle
+            while True:
+                time.sleep(1)
+    
+    except KeyboardInterrupt:
+        print("\n\nAsistan durduruluyor...")
+    
+    finally:
+        assistant.stop()
+        print("\nMUCO AI Asistan kapatıldı. Görüşürüz! 👋")
+
+if __name__ == "__main__":
+    # Gerekli kütüphaneleri kontrol et
+    required_packages = [
+        ("requests", "requests"),
+        ("psutil", "psutil"),
+        ("speedtest-cli", "speedtest"),
+        ("ping3", "ping3")
+    ]
+    
+    missing_packages = []
+    for pip_name, import_name in required_packages:
+        try:
+            __import__(import_name)
+        except ImportError:
+            missing_packages.append(pip_name)
+    
+    if missing_packages:
+        print(f"\n⚠️  Eksik paketler: {', '.join(missing_packages)}")
+        print("Kurulum için: pip install " + " ".join(missing_packages))
+        
+        # Kurulum sorma
+        install = input("\nEksik paketleri kurmak ister misiniz? (E/h): ").strip().lower()
+        if install in ['e', 'evet', 'y', 'yes']:
+            import subprocess
+            subprocess.run(["pip", "install"] + missing_packages)
+            print("\n✅ Paketler kuruldu. Program yeniden başlatılıyor...")
+            main()
+    else:
+        main()
+Şimdi, bundan sonra yapılması için önerilerim:
+
+🚀 Geliştirme Yol Haritası
+1. AI Model Entegrasyonu (Hemen)
+python
+# ChatGPT/OpenAI entegrasyonu
+assistant.add_ai_provider("openai", api_key="your-key")
+# Yerel LLM entegrasyonu (Llama 2, Mistral)
+assistant.add_local_llm("llama-2-7b", model_path="./models")
+2. Multi-Language Desteği
+python
+# Çoklu dil desteği
+assistant.set_language("tr")  # Türkçe
+assistant.set_language("en")  # İngilizce
+assistant.set_language("de")  # Almanca
+3. IoT ve Donanım Entegrasyonu
+python
+# Raspberry Pi, Arduino entegrasyonu
+assistant.connect_iot_device("raspberry_pi", ip="192.168.1.100")
+# Sensör verilerini okuma
+temperature = assistant.read_sensor("temperature")
+4. Blockchain ve Web3 Özellikleri
+python
+# Akıllı kontrat etkileşimi
+assistant.deploy_smart_contract("erc20_token.sol")
+# NFT analizi
+nft_analysis = assistant.analyze_nft_collection("boredapeyachtclub")
+5. Gelişmiş Güvenlik
+python
+# Anomali tespiti
+assistant.enable_security_monitoring()
+# Siber saldırı koruması
+assistant.enable_intrusion_detection()
+# Şifreleme ve gizlilik
+assistant.enable_end_to_end_encryption()
+6. Cloud ve Edge Computing
+python
+# AWS/Azure/Google Cloud entegrasyonu
+assistant.connect_cloud_provider("aws", region="us-east-1")
+# Edge computing dağıtımı
+assistant.deploy_edge_node("raspberry_pi_cluster")
+7. AR/VR Desteği
+python
+# Artırılmış gerçeklik
+assistant.start_ar_session()
+# Sanal asistan avatarı
+assistant.enable_vr_avatar()
+8. Autonomous Learning
+python
+# Kendi kendine öğrenme
+assistant.enable_self_learning()
+# Kullanıcı tercihlerini öğrenme
+assistant.learn_user_preferences()
+📋 Öncelikli Aksiyon Planı:
+Hafta 1-2: AI Geliştirme
+LLM Entegrasyonu: GPT-4, Llama 2 entegrasyonu
+
+Fine-tuning: Özel verilerle model eğitimi
+
+RAG (Retrieval Augmented Generation): Bilgi tabanı entegrasyonu
+
+Hafta 3-4: IoT ve Edge
+Raspberry Pi desteği
+
+Real-time sensör verisi işleme
+
+Edge AI modelleri dağıtımı
+
+Hafta 5-6: Cloud Scale
+Kubernetes deployment
+
+Auto-scaling mekanizması
+
+Multi-region deployment
+
+Hafta 7-8: Security & Privacy
+End-to-end encryption
+
+GDPR compliance
+
+Zero-trust architecture
+
+🎯 Kısa Vadeli Hedefler:
+1. MVP (Minimum Viable Product)
+python
+# 1 Ay içinde tamamlanacak
+features = [
+    "Temel sesli asistan",
+    "İnternet kontrol paneli",
+    "Sistem izleme",
+    "AI model analizi"
+]
+2. Gelişmiş Özellikler
+python
+# 3 Ay içinde tamamlanacak
+advanced_features = [
+    "Çoklu dil desteği",
+    "IoT entegrasyonu",
+    "Cloud sync",
+    "Mobil uygulama"
+]
+3. Enterprise Sürüm
+python
+# 6 Ay içinde tamamlanacak
+enterprise_features = [
+    "Multi-tenant architecture",
+    "Advanced security",
+    "API gateway",
+    "Analytics dashboard"
+]
+💡 İnovatif Özellik Önerileri:
+1. Quantum Computing Hazırlığı
+python
+# Quantum algoritmaları için hazırlık
+assistant.prepare_for_quantum()
+# Quantum-safe encryption
+assistant.enable_quantum_encryption()
+2. Digital Twin Oluşturma
+python
+# Kullanıcı için digital twin
+digital_twin = assistant.create_digital_twin(user_id="123")
+# Simülasyon ve tahmin
+predictions = digital_twin.simulate_scenarios()
+3. Neural Interface Prototipi
+python
+# EEG veri analizi (prototip)
+brain_data = assistant.read_eeg_data()
+# Düşünce tabanlı kontrol
+assistant.enable_thought_control()
+4. Swarm Intelligence
+python
+# Çoklu asistan koordinasyonu
+swarm = assistant.create_swarm(5)  # 5 asistan
+# Distributed problem solving
+solution = swarm.solve_problem(problem)
+🔧 Teknik Altyapı Geliştirmeleri:
+1. Microservices Architecture
+yaml
+# docker-compose.yml
+services:
+  speech-service:
+    image: muco/speech:latest
+  ai-service:
+    image: muco/ai:latest
+  monitoring-service:
+    image: muco/monitoring:latest
+2. Real-time Database
+python
+# Redis ile real-time veri
+assistant.connect_redis(host="redis", port=6379)
+# WebSocket ile canlı veri
+assistant.enable_websocket()
+3. Machine Learning Pipeline
+python
+# Otomatik ML pipeline
+pipeline = assistant.create_ml_pipeline([
+    "data_collection",
+    "preprocessing",
+    "training",
+    "evaluation",
+    "deployment"
+])
+📊 Başarı Metrikleri:
+Kullanıcı Memnuniyeti: > 90%
+
+Sistem Uptime: > 99.9%
+
+Response Time: < 100ms
+
+Accuracy Rate: > 95%
+
+Scalability: 1M+ concurrent users
+
+🚀 Hemen Başlayabileceğiniz Projeler:
+Proje 1: AI-Powered Cybersecurity
+python
+# Siber güvenlik asistanı
+security_assistant = MUCOSecurityAssistant()
+security_assistant.monitor_network()
+security_assistant.detect_threats()
+security_assistant.auto_respond()
+Proje 2: Smart Home Controller
+python
+# Akıllı ev kontrolü
+home_assistant = MUCOSmartHome()
+home_assistant.connect_devices(["lights", "thermostat", "security"])
+home_assistant.learn_routines()
+home_assistant.optimize_energy()
+Proje 3: Healthcare Assistant
+python
+# Sağlık asistanı
+health_assistant = MUCOHealthcare()
+health_assistant.monitor_vitals()
+health_assistant.analyze_symptoms()
+health_assistant.connect_doctor()
+💼 İş Modeli Önerileri:
+1. Freemium Model
+Temel özellikler: Ücretsiz
+
+Gelişmiş özellikler: $9.99/ay
+
+Enterprise: $99.99/ay
+
+2. API-as-a-Service
+API calls: $0.01/1000 requests
+
+Custom models: $499/ay
+
+White label: $999/ay
+
+3. Consulting & Integration
+Kurumsal entegrasyon: $5000/proje
+
+Custom development: $150/saat
+
+Training & support: $2000/gün
+
+📈 Sonraki Adımlar:
+Prototip Testi: 100 kullanıcı ile beta test
+
+Feedback Toplama: Kullanıcı geri bildirimleri
+
+Ölçeklendirme: Cloud infrastructure hazırlığı
+
+Pazarlama: Digital marketing campaign
+
+Partnerships: Stratejik ortaklıklar
+
+🎯 Özet:
+MUCO AI platformunu dünyanın en gelişmiş AI asistan ekosistemi haline getirebilirsiniz. Yukarıdaki yol haritası ile:
+
+Kısa vadede: İşlevsel, kullanıcı dostu bir asistan
+
+Orta vadede: Endüstri lideri bir platform
+
+Uzun vadede: Yapay zeka alanında global bir standart
+
+Hemen başlamak için en iyi adım: OpenAI API entegrasyonu ve basit bir mobil uygulama geliştirmek.

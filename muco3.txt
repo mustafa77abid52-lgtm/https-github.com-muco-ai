@@ -1,0 +1,4732 @@
+yukarıdaki modellenin büyükveri ve veri analizini  kodla ve geliştir
+MUCO: Büyük Veri ve Veri Analizi Modülleri
+MUCO platformu için ölçeklenebilir büyük veri işleme ve gelişmiş analitik modülleri:
+
+1. Büyük Veri İşleme Pipeline'ı (Spark/PySpark)
+python
+# muco_bigdata_spark.py
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from pyspark.sql.window import Window
+from pyspark.ml.feature import *
+from pyspark.ml import Pipeline
+from pyspark.ml.classification import *
+from pyspark.ml.regression import *
+from pyspark.ml.evaluation import *
+from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+from delta.tables import *
+import json
+import logging
+from typing import Dict, List, Any, Optional
+
+# Logging configuration
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class MucoSparkProcessor:
+    """MUCO Büyük Veri İşleme Sistemi"""
+    
+    def __init__(self, app_name="MUCO-BigData", master="local[*]", 
+                 memory="4g", config: Dict[str, str] = None):
+        """
+        SparkSession başlatma
+        
+        Args:
+            app_name: Spark uygulama adı
+            master: Spark master URL
+            memory: Executor memory
+            config: Ek Spark konfigürasyonları
+        """
+        self.app_name = app_name
+        self.master = master
+        self.memory = memory
+        self.config = config or {}
+        
+        # SparkSession oluştur
+        self.spark = self._create_spark_session()
+        
+    def _create_spark_session(self) -> SparkSession:
+        """SparkSession oluşturma"""
+        try:
+            builder = SparkSession.builder \
+                .appName(self.app_name) \
+                .master(self.master) \
+                .config("spark.executor.memory", self.memory) \
+                .config("spark.driver.memory", self.memory) \
+                .config("spark.sql.shuffle.partitions", "200") \
+                .config("spark.default.parallelism", "100") \
+                .config("spark.sql.adaptive.enabled", "true") \
+                .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+                .config("spark.sql.adaptive.skewJoin.enabled", "true")
+            
+            # Delta Lake konfigürasyonu
+            builder = builder.config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
+                           .config("spark.sql.catalog.spark_catalog", 
+                                   "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+            
+            # Ek konfigürasyonlar
+            for key, value in self.config.items():
+                builder = builder.config(key, value)
+            
+            # SparkSession oluştur
+            spark = builder.getOrCreate()
+            
+            logger.info(f"SparkSession created: {spark.version}")
+            return spark
+            
+        except Exception as e:
+            logger.error(f"SparkSession creation failed: {str(e)}")
+            raise
+    
+    def read_data(self, path: str, format: str = "parquet", 
+                  options: Dict[str, str] = None) -> "DataFrame":
+        """
+        Büyük veri kaynağından okuma
+        
+        Args:
+            path: Veri yolu (HDFS, S3, local)
+            format: Veri formatı (parquet, csv, json, delta)
+            options: Okuma opsiyonları
+            
+        Returns:
+            Spark DataFrame
+        """
+        try:
+            reader = self.spark.read
+            
+            # Format bazlı okuma
+            if format.lower() == "parquet":
+                df = reader.parquet(path)
+            elif format.lower() == "csv":
+                options = options or {"header": "true", "inferSchema": "true"}
+                df = reader.options(**options).csv(path)
+            elif format.lower() == "json":
+                df = reader.json(path)
+            elif format.lower() == "delta":
+                df = reader.format("delta").load(path)
+            else:
+                raise ValueError(f"Unsupported format: {format}")
+            
+            logger.info(f"Data loaded: {path}, Rows: {df.count()}, Columns: {len(df.columns)}")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Data reading failed: {str(e)}")
+            raise
+    
+    def write_data(self, df: "DataFrame", path: str, format: str = "parquet",
+                   mode: str = "overwrite", partition_by: List[str] = None,
+                   options: Dict[str, str] = None) -> None:
+        """
+        Büyük veri yazma
+        
+        Args:
+            df: Yazılacak DataFrame
+            path: Yazma yolu
+            format: Yazma formatı
+            mode: Yazma modu (overwrite, append, ignore, error)
+            partition_by: Partition kolonları
+            options: Yazma opsiyonları
+        """
+        try:
+            writer = df.write.mode(mode)
+            
+            # Options ekle
+            if options:
+                writer = writer.options(**options)
+            
+            # Partition ayarları
+            if partition_by:
+                writer = writer.partitionBy(*partition_by)
+            
+            # Format bazlı yazma
+            if format.lower() == "parquet":
+                writer.parquet(path)
+            elif format.lower() == "csv":
+                writer.csv(path)
+            elif format.lower() == "delta":
+                writer.format("delta").save(path)
+            else:
+                raise ValueError(f"Unsupported format: {format}")
+            
+            logger.info(f"Data written: {path}, Format: {format}")
+            
+        except Exception as e:
+            logger.error(f"Data writing failed: {str(e)}")
+            raise
+    
+    def process_financial_data(self, df: "DataFrame", symbol_col: str = "symbol") -> "DataFrame":
+        """
+        Büyük finansal veri işleme
+        
+        Args:
+            df: Finansal veri DataFrame
+            symbol_col: Sembol kolonu adı
+            
+        Returns:
+            İşlenmiş DataFrame
+        """
+        try:
+            # Window fonksiyonları için
+            window_spec = Window.partitionBy(symbol_col).orderBy("date")
+            
+            # Teknik göstergeler
+            processed_df = df.withColumn("prev_close", lag("close", 1).over(window_spec)) \
+                            .withColumn("returns", 
+                                       when(col("prev_close").isNotNull(),
+                                           (col("close") - col("prev_close")) / col("prev_close")
+                                       ).otherwise(0)) \
+                            .withColumn("sma_20", avg("close").over(
+                                Window.partitionBy(symbol_col)
+                                      .orderBy("date")
+                                      .rowsBetween(-19, 0)
+                            )) \
+                            .withColumn("sma_50", avg("close").over(
+                                Window.partitionBy(symbol_col)
+                                      .orderBy("date")
+                                      .rowsBetween(-49, 0)
+                            )) \
+                            .withColumn("volume_sma", avg("volume").over(
+                                Window.partitionBy(symbol_col)
+                                      .orderBy("date")
+                                      .rowsBetween(-19, 0)
+                            )) \
+                            .withColumn("high_20", max("high").over(
+                                Window.partitionBy(symbol_col)
+                                      .orderBy("date")
+                                      .rowsBetween(-19, 0)
+                            )) \
+                            .withColumn("low_20", min("low").over(
+                                Window.partitionBy(symbol_col)
+                                      .orderBy("date")
+                                      .rowsBetween(-19, 0)
+                            )) \
+                            .withColumn("bb_upper", col("sma_20") + 2 * stddev("close").over(
+                                Window.partitionBy(symbol_col)
+                                      .orderBy("date")
+                                      .rowsBetween(-19, 0)
+                            )) \
+                            .withColumn("bb_lower", col("sma_20") - 2 * stddev("close").over(
+                                Window.partitionBy(symbol_col)
+                                      .orderBy("date")
+                                      .rowsBetween(-19, 0)
+                            ))
+            
+            # RSI hesaplama
+            processed_df = self._calculate_rsi_spark(processed_df, symbol_col)
+            
+            # MACD hesaplama
+            processed_df = self._calculate_macd_spark(processed_df, symbol_col)
+            
+            # Momentum göstergeleri
+            for period in [5, 10, 20]:
+                processed_df = processed_df.withColumn(
+                    f"momentum_{period}d",
+                    (col("close") / lag("close", period).over(window_spec) - 1) * 100
+                )
+            
+            # Volatilite
+            processed_df = processed_df.withColumn(
+                "volatility_20d",
+                stddev("returns").over(
+                    Window.partitionBy(symbol_col)
+                          .orderBy("date")
+                          .rowsBetween(-19, 0)
+                ) * np.sqrt(252)
+            )
+            
+            # Log dönüşümleri
+            processed_df = processed_df.withColumn("log_close", log(col("close"))) \
+                                      .withColumn("log_volume", log(col("volume") + 1))
+            
+            # Price action patterns
+            processed_df = self._identify_price_patterns(processed_df, symbol_col)
+            
+            logger.info(f"Financial data processed: {processed_df.count()} rows")
+            return processed_df
+            
+        except Exception as e:
+            logger.error(f"Financial data processing failed: {str(e)}")
+            raise
+    
+    def _calculate_rsi_spark(self, df: "DataFrame", symbol_col: str) -> "DataFrame":
+        """Spark'ta RSI hesaplama"""
+        window_spec = Window.partitionBy(symbol_col).orderBy("date")
+        
+        # Gain ve loss hesapla
+        df_with_returns = df.withColumn("price_change", col("close") - lag("close", 1).over(window_spec))
+        df_with_returns = df_with_returns.withColumn("gain", 
+            when(col("price_change") > 0, col("price_change")).otherwise(0))
+        df_with_returns = df_with_returns.withColumn("loss", 
+            when(col("price_change") < 0, -col("price_change")).otherwise(0))
+        
+        # EMA hesaplama
+        alpha = 1/14
+        df_with_returns = df_with_returns.withColumn("avg_gain", 
+            sum(col("gain") * pow(1 - alpha, 14 - row_number().over(window_spec))).over(window_spec))
+        df_with_returns = df_with_returns.withColumn("avg_loss", 
+            sum(col("loss") * pow(1 - alpha, 14 - row_number().over(window_spec))).over(window_spec))
+        
+        # RSI hesapla
+        df_with_returns = df_with_returns.withColumn("rs", 
+            when(col("avg_loss") > 0, col("avg_gain") / col("avg_loss")).otherwise(100))
+        df_with_returns = df_with_returns.withColumn("rsi", 
+            100 - (100 / (1 + col("rs"))))
+        
+        return df_with_returns
+    
+    def _calculate_macd_spark(self, df: "DataFrame", symbol_col: str) -> "DataFrame":
+        """Spark'ta MACD hesaplama"""
+        # EMA hesaplama fonksiyonu
+        def calculate_ema(column, period):
+            alpha = 2 / (period + 1)
+            window = Window.partitionBy(symbol_col).orderBy("date").rowsBetween(-period + 1, 0)
+            return sum(col(column) * pow(1 - alpha, period - row_number().over(window))).over(window)
+        
+        # EMA'ları hesapla
+        df_with_ema = df.withColumn("ema_12", calculate_ema("close", 12)) \
+                       .withColumn("ema_26", calculate_ema("close", 26))
+        
+        # MACD ve signal hesapla
+        df_with_ema = df_with_ema.withColumn("macd", col("ema_12") - col("ema_26")) \
+                                .withColumn("signal_line", calculate_ema("macd", 9)) \
+                                .withColumn("macd_histogram", col("macd") - col("signal_line"))
+        
+        return df_with_ema
+    
+    def _identify_price_patterns(self, df: "DataFrame", symbol_col: str) -> "DataFrame":
+        """Fiyat desenlerini tanımla"""
+        window_5 = Window.partitionBy(symbol_col).orderBy("date").rowsBetween(-4, 0)
+        window_3 = Window.partitionBy(symbol_col).orderBy("date").rowsBetween(-2, 0)
+        
+        # Candlestick patterns
+        df_with_patterns = df.withColumn("body", abs(col("close") - col("open"))) \
+                            .withColumn("upper_shadow", 
+                                when(col("close") > col("open"), 
+                                     col("high") - col("close")).otherwise(col("high") - col("open"))) \
+                            .withColumn("lower_shadow", 
+                                when(col("close") > col("open"), 
+                                     col("open") - col("low")).otherwise(col("close") - col("low")))
+        
+        # Doji pattern
+        df_with_patterns = df_with_patterns.withColumn("is_doji", 
+            when(col("body") / (col("high") - col("low")) < 0.1, 1).otherwise(0))
+        
+        # Hammer pattern
+        df_with_patterns = df_with_patterns.withColumn("is_hammer", 
+            when((col("lower_shadow") > 2 * col("body")) & 
+                 (col("upper_shadow") < 0.1 * col("body")) &
+                 (col("close") > col("open")), 1).otherwise(0))
+        
+        # Engulfing pattern
+        df_with_patterns = df_with_patterns.withColumn("prev_open", lag("open", 1).over(
+            Window.partitionBy(symbol_col).orderBy("date")))
+        df_with_patterns = df_with_patterns.withColumn("prev_close", lag("close", 1).over(
+            Window.partitionBy(symbol_col).orderBy("date")))
+        
+        df_with_patterns = df_with_patterns.withColumn("bullish_engulfing",
+            when((col("close") > col("open")) &
+                 (col("prev_close") < col("prev_open")) &
+                 (col("open") < col("prev_close")) &
+                 (col("close") > col("prev_open")), 1).otherwise(0))
+        
+        return df_with_patterns
+    
+    def process_content_data(self, df: "DataFrame", text_col: str = "content") -> "DataFrame":
+        """
+        Büyük metin verisi işleme
+        
+        Args:
+            df: İçerik veri DataFrame
+            text_col: Metin kolonu adı
+            
+        Returns:
+            İşlenmiş DataFrame
+        """
+        try:
+            # Temizleme ve tokenization
+            @udf(returnType=ArrayType(StringType()))
+            def clean_text_udf(text):
+                if not text:
+                    return []
+                # Basit temizleme
+                import re
+                text = re.sub(r'[^\w\s]', ' ', text.lower())
+                tokens = text.split()
+                return tokens
+            
+            # TF-IDF vektörizasyonu
+            tokenizer = Tokenizer(inputCol=text_col, outputCol="tokens")
+            stopwords_remover = StopWordsRemover(inputCol="tokens", outputCol="filtered_tokens")
+            hashing_tf = HashingTF(inputCol="filtered_tokens", outputCol="raw_features", numFeatures=10000)
+            idf = IDF(inputCol="raw_features", outputCol="tfidf_features")
+            
+            # Pipeline oluştur
+            pipeline = Pipeline(stages=[tokenizer, stopwords_remover, hashing_tf, idf])
+            model = pipeline.fit(df)
+            processed_df = model.transform(df)
+            
+            # Ek metrikler
+            @udf(returnType=IntegerType())
+            def word_count_udf(tokens):
+                return len(tokens) if tokens else 0
+            
+            @udf(returnType=DoubleType())
+            def avg_word_length_udf(tokens):
+                if not tokens:
+                    return 0.0
+                return sum(len(word) for word in tokens) / len(tokens)
+            
+            processed_df = processed_df.withColumn("word_count", word_count_udf(col("filtered_tokens"))) \
+                                      .withColumn("avg_word_length", avg_word_length_udf(col("filtered_tokens")))
+            
+            # Sentiment analizi (basit)
+            @udf(returnType=DoubleType())
+            def simple_sentiment_udf(text):
+                if not text:
+                    return 0.0
+                positive_words = ["good", "great", "excellent", "amazing", "love", "best"]
+                negative_words = ["bad", "terrible", "awful", "hate", "worst", "poor"]
+                
+                text_lower = text.lower()
+                positive_count = sum(1 for word in positive_words if word in text_lower)
+                negative_count = sum(1 for word in negative_words if word in text_lower)
+                
+                total = positive_count + negative_count
+                if total == 0:
+                    return 0.0
+                return (positive_count - negative_count) / total
+            
+            processed_df = processed_df.withColumn("sentiment_score", 
+                                                  simple_sentiment_udf(col(text_col)))
+            
+            logger.info(f"Content data processed: {processed_df.count()} rows")
+            return processed_df
+            
+        except Exception as e:
+            logger.error(f"Content data processing failed: {str(e)}")
+            raise
+    
+    def calculate_correlation_matrix(self, df: "DataFrame", 
+                                    numeric_cols: List[str]) -> "DataFrame":
+        """
+        Büyük veri korelasyon matrisi
+        
+        Args:
+            df: DataFrame
+            numeric_cols: Numerik kolon listesi
+            
+        Returns:
+            Korelasyon matrisi DataFrame
+        """
+        try:
+            # Sadece numeric kolonları seç
+            numeric_df = df.select(*numeric_cols)
+            
+            # Korelasyon hesaplama
+            corr_matrix = []
+            
+            for i, col1 in enumerate(numeric_cols):
+                for j, col2 in enumerate(numeric_cols):
+                    if i <= j:  # Üst üçgen matris
+                        corr = numeric_df.stat.corr(col1, col2)
+                        corr_matrix.append((col1, col2, corr))
+            
+            # Korelasyon matrisini DataFrame'e çevir
+            corr_df = self.spark.createDataFrame(corr_matrix, 
+                                                ["feature1", "feature2", "correlation"])
+            
+            return corr_df
+            
+        except Exception as e:
+            logger.error(f"Correlation calculation failed: {str(e)}")
+            raise
+    
+    def detect_anomalies(self, df: "DataFrame", numeric_cols: List[str],
+                        method: str = "iqr", threshold: float = 3.0) -> "DataFrame":
+        """
+        Anomali tespiti
+        
+        Args:
+            df: DataFrame
+            numeric_cols: Numerik kolon listesi
+            method: Anomali tespit metodu (iqr, zscore, isolation_forest)
+            threshold: Anomali threshold'u
+            
+        Returns:
+            Anomalileri işaretlenmiş DataFrame
+        """
+        try:
+            if method == "iqr":
+                # IQR metodu
+                result_df = df
+                
+                for col_name in numeric_cols:
+                    # Quantile hesaplama
+                    quantiles = df.approxQuantile(col_name, [0.25, 0.75], 0.05)
+                    q1, q3 = quantiles[0], quantiles[1]
+                    iqr = q3 - q1
+                    
+                    # Anomali threshold'ları
+                    lower_bound = q1 - threshold * iqr
+                    upper_bound = q3 + threshold * iqr
+                    
+                    # Anomali işaretleme
+                    result_df = result_df.withColumn(
+                        f"{col_name}_anomaly",
+                        when((col(col_name) < lower_bound) | 
+                             (col(col_name) > upper_bound), 1).otherwise(0)
+                    )
+                    
+                # Toplam anomali skoru
+                anomaly_cols = [f"{col}_anomaly" for col in numeric_cols]
+                result_df = result_df.withColumn(
+                    "total_anomaly_score",
+                    sum(col(c) for c in anomaly_cols)
+                )
+                
+            elif method == "zscore":
+                # Z-score metodu
+                result_df = df
+                
+                for col_name in numeric_cols:
+                    # Ortalama ve standart sapma
+                    stats = df.select(
+                        mean(col_name).alias("mean"),
+                        stddev(col_name).alias("std")
+                    ).first()
+                    
+                    mean_val = stats["mean"]
+                    std_val = stats["std"] if stats["std"] else 0
+                    
+                    if std_val > 0:
+                        # Z-score hesaplama
+                        result_df = result_df.withColumn(
+                            f"{col_name}_zscore",
+                            abs((col(col_name) - mean_val) / std_val)
+                        ).withColumn(
+                            f"{col_name}_anomaly",
+                            when(col(f"{col_name}_zscore") > threshold, 1).otherwise(0)
+                        )
+                    
+                # Toplam anomali skoru
+                anomaly_cols = [f"{col}_anomaly" for col in numeric_cols]
+                result_df = result_df.withColumn(
+                    "total_anomaly_score",
+                    sum(col(c) for c in anomaly_cols)
+                )
+            
+            elif method == "isolation_forest":
+                # Isolation Forest (PySpark ML)
+                from pyspark.ml.feature import VectorAssembler
+                
+                # Feature vektörü oluştur
+                assembler = VectorAssembler(inputCols=numeric_cols, outputCol="features")
+                assembled_df = assembler.transform(df)
+                
+                # Isolation Forest modeli
+                if "spark.ml.clustering" in dir():
+                    from pyspark.ml.clustering import BisectingKMeans
+                    
+                    # Basitleştirilmiş clustering-based anomaly detection
+                    kmeans = BisectingKMeans(k=10, seed=42)
+                    model = kmeans.fit(assembled_df)
+                    
+                    # Tahmin ve anomali skoru
+                    result_df = model.transform(assembled_df)
+                    
+                    # Distance to cluster center hesapla
+                    @udf(returnType=DoubleType())
+                    def calculate_distance(features, center):
+                        # Basitleştirilmiş distance hesaplama
+                        return float(np.linalg.norm(features.toArray() - center))
+                    
+                    # Her bir nokta için cluster merkezine olan uzaklık
+                    result_df = result_df.withColumn(
+                        "distance_to_center",
+                        calculate_distance(col("features"), col("prediction"))
+                    )
+                    
+                    # Anomali threshold'u
+                    threshold_val = result_df.approxQuantile("distance_to_center", [0.95], 0.05)[0]
+                    
+                    result_df = result_df.withColumn(
+                        "is_anomaly",
+                        when(col("distance_to_center") > threshold_val, 1).otherwise(0)
+                    )
+                
+            return result_df
+            
+        except Exception as e:
+            logger.error(f"Anomaly detection failed: {str(e)}")
+            raise
+    
+    def calculate_time_series_metrics(self, df: "DataFrame", 
+                                     value_col: str,
+                                     timestamp_col: str = "timestamp",
+                                     group_col: str = None) -> "DataFrame":
+        """
+        Zaman serisi metrikleri hesaplama
+        
+        Args:
+            df: DataFrame
+            value_col: Değer kolonu
+            timestamp_col: Zaman damgası kolonu
+            group_col: Gruplama kolonu
+            
+        Returns:
+            Zaman serisi metrikleri DataFrame
+        """
+        try:
+            # Window tanımla
+            if group_col:
+                window_spec = Window.partitionBy(group_col).orderBy(timestamp_col)
+            else:
+                window_spec = Window.orderBy(timestamp_col)
+            
+            # Temel metrikler
+            result_df = df.withColumn("lag_1", lag(value_col, 1).over(window_spec)) \
+                         .withColumn("returns", 
+                                    when(col("lag_1").isNotNull(),
+                                        (col(value_col) - col("lag_1")) / col("lag_1")
+                                    ).otherwise(0)) \
+                         .withColumn("rolling_mean_7", 
+                                   avg(value_col).over(window_spec.rowsBetween(-6, 0))) \
+                         .withColumn("rolling_std_7", 
+                                   stddev(value_col).over(window_spec.rowsBetween(-6, 0))) \
+                         .withColumn("rolling_min_7", 
+                                   min(value_col).over(window_spec.rowsBetween(-6, 0))) \
+                         .withColumn("rolling_max_7", 
+                                   max(value_col).over(window_spec.rowsBetween(-6, 0)))
+            
+            # Autocorrelation (lag 1)
+            result_df = result_df.withColumn("autocorr_lag1",
+                corr(value_col, "lag_1").over(window_spec.rowsBetween(-29, 0)))
+            
+            # Seasonality metrics (haftalık)
+            @udf(returnType=IntegerType())
+            def day_of_week_udf(timestamp):
+                return timestamp.weekday()
+            
+            result_df = result_df.withColumn("day_of_week", 
+                                           day_of_week_udf(col(timestamp_col)))
+            
+            # Gün bazlı ortalamalar
+            if group_col:
+                day_avg_window = Window.partitionBy(group_col, "day_of_week")
+            else:
+                day_avg_window = Window.partitionBy("day_of_week")
+            
+            result_df = result_df.withColumn("day_of_week_avg",
+                                           avg(value_col).over(day_avg_window))
+            
+            # Trend hesaplama (linear regression slope)
+            @udf(returnType=DoubleType())
+            def calculate_trend_udf(values):
+                if not values or len(values) < 2:
+                    return 0.0
+                x = np.arange(len(values))
+                y = np.array(values)
+                slope, _ = np.polyfit(x, y, 1)
+                return float(slope)
+            
+            # Rolling trend
+            result_df = result_df.withColumn("trend_7d",
+                calculate_trend_udf(collect_list(value_col).over(window_spec.rowsBetween(-6, 0))))
+            
+            # Volatility clustering
+            result_df = result_df.withColumn("volatility_cluster",
+                when(abs(col("returns")) > col("returns").over(window_spec.rowsBetween(-29, 0)).stddev() * 2,
+                     1).otherwise(0))
+            
+            logger.info(f"Time series metrics calculated")
+            return result_df
+            
+        except Exception as e:
+            logger.error(f"Time series metrics calculation failed: {str(e)}")
+            raise
+    
+    def optimize_dataframe(self, df: "DataFrame", 
+                          cache_level: str = "memory") -> "DataFrame":
+        """
+        DataFrame optimizasyonu
+        
+        Args:
+            df: Optimize edilecek DataFrame
+            cache_level: Cache seviyesi (memory, disk, none)
+            
+        Returns:
+            Optimize edilmiş DataFrame
+        """
+        try:
+            # Cache işlemi
+            if cache_level == "memory":
+                df = df.cache()
+            elif cache_level == "disk":
+                df = df.persist(storageLevel="DISK_ONLY")
+            
+            # Partition optimizasyonu
+            num_partitions = max(1, df.rdd.getNumPartitions())
+            if num_partitions > 200:
+                df = df.coalesce(200)
+            elif num_partitions < 10:
+                df = df.repartition(100)
+            
+            # Column pruning (sadece kullanılan kolonları tut)
+            # Bu kısım uygulama ihtiyacına göre özelleştirilmeli
+            
+            logger.info(f"DataFrame optimized: {num_partitions} -> {df.rdd.getNumPartitions()} partitions")
+            return df
+            
+        except Exception as e:
+            logger.error(f"DataFrame optimization failed: {str(e)}")
+            raise
+    
+    def create_summary_statistics(self, df: "DataFrame") -> Dict[str, Any]:
+        """
+        Özet istatistikler oluştur
+        
+        Args:
+            df: DataFrame
+            
+        Returns:
+            Özet istatistikler sözlüğü
+        """
+        try:
+            summary = {
+                "row_count": df.count(),
+                "column_count": len(df.columns),
+                "columns": df.columns,
+                "dtypes": dict(df.dtypes),
+                "missing_values": {},
+                "basic_stats": {}
+            }
+            
+            # Eksik değerler
+            for col_name in df.columns:
+                null_count = df.filter(col(col_name).isNull()).count()
+                if null_count > 0:
+                    summary["missing_values"][col_name] = {
+                        "count": null_count,
+                        "percentage": round(null_count / summary["row_count"] * 100, 2)
+                    }
+            
+            # Numerik kolonlar için istatistikler
+            numeric_cols = [col_name for col_name, dtype in df.dtypes 
+                          if dtype in ["int", "bigint", "float", "double", "decimal"]]
+            
+            for col_name in numeric_cols[:10]:  # İlk 10 numeric kolon
+                stats = df.select(
+                    mean(col_name).alias("mean"),
+                    stddev(col_name).alias("std"),
+                    min(col_name).alias("min"),
+                    max(col_name).alias("max"),
+                    approxQuantile(col_name, [0.25, 0.5, 0.75], 0.05)[0].alias("q1"),
+                    approxQuantile(col_name, [0.25, 0.5, 0.75], 0.05)[1].alias("median"),
+                    approxQuantile(col_name, [0.25, 0.5, 0.75], 0.05)[2].alias("q3")
+                ).first()
+                
+                summary["basic_stats"][col_name] = {
+                    "mean": float(stats["mean"]) if stats["mean"] else None,
+                    "std": float(stats["std"]) if stats["std"] else None,
+                    "min": float(stats["min"]) if stats["min"] else None,
+                    "max": float(stats["max"]) if stats["max"] else None,
+                    "q1": float(stats["q1"]) if stats["q1"] else None,
+                    "median": float(stats["median"]) if stats["median"] else None,
+                    "q3": float(stats["q3"]) if stats["q3"] else None,
+                    "range": float(stats["max"] - stats["min"]) if stats["max"] and stats["min"] else None
+                }
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Summary statistics creation failed: {str(e)}")
+            raise
+    
+    def run_sql_query(self, query: str, temp_tables: Dict[str, "DataFrame"] = None) -> "DataFrame":
+        """
+        SQL sorgusu çalıştır
+        
+        Args:
+            query: SQL sorgusu
+            temp_tables: Geçici tablolar
+            
+        Returns:
+            Sorgu sonucu DataFrame
+        """
+        try:
+            # Geçici tabloları oluştur
+            if temp_tables:
+                for table_name, table_df in temp_tables.items():
+                    table_df.createOrReplaceTempView(table_name)
+            
+            # SQL sorgusunu çalıştır
+            result_df = self.spark.sql(query)
+            
+            logger.info(f"SQL query executed: {query[:100]}...")
+            return result_df
+            
+        except Exception as e:
+            logger.error(f"SQL query execution failed: {str(e)}")
+            raise
+
+# Kullanım örneği
+if __name__ == "__main__":
+    # Spark processor oluştur
+    spark_processor = MucoSparkProcessor(
+        app_name="MUCO-Financial-Analysis",
+        master="local[*]",
+        memory="8g",
+        config={
+            "spark.sql.autoBroadcastJoinThreshold": "-1",
+            "spark.sql.broadcastTimeout": "600"
+        }
+    )
+    
+    # Örnek veri oluştur
+    sample_data = [
+        ("AAPL", "2023-01-01", 150.0, 155.0, 148.0, 152.0, 1000000),
+        ("AAPL", "2023-01-02", 152.0, 158.0, 151.0, 157.0, 1200000),
+        ("AAPL", "2023-01-03", 157.0, 160.0, 155.0, 159.0, 1100000),
+        ("GOOGL", "2023-01-01", 90.0, 95.0, 89.0, 93.0, 800000),
+        ("GOOGL", "2023-01-02", 93.0, 97.0, 92.0, 96.0, 900000),
+        ("GOOGL", "2023-01-03", 96.0, 99.0, 95.0, 98.0, 850000),
+    ]
+    
+    schema = StructType([
+        StructField("symbol", StringType(), True),
+        StructField("date", StringType(), True),
+        StructField("open", DoubleType(), True),
+        StructField("high", DoubleType(), True),
+        StructField("low", DoubleType(), True),
+        StructField("close", DoubleType(), True),
+        StructField("volume", LongType(), True),
+    ])
+    
+    df = spark_processor.spark.createDataFrame(sample_data, schema)
+    
+    # Finansal veri işleme
+    processed_df = spark_processor.process_financial_data(df, "symbol")
+    
+    # Özet istatistikler
+    summary = spark_processor.create_summary_statistics(processed_df)
+    print(f"Summary: {json.dumps(summary, indent=2)}")
+    
+    # Korelasyon matrisi
+    numeric_cols = ["close", "volume", "sma_20", "sma_50"]
+    corr_df = spark_processor.calculate_correlation_matrix(processed_df, numeric_cols)
+    corr_df.show()
+    
+    # Anomali tespiti
+    anomaly_df = spark_processor.detect_anomalies(processed_df, ["close", "volume"], method="iqr")
+    anomaly_df.select("symbol", "date", "close", "close_anomaly", "total_anomaly_score").show()
+    
+    # SparkSession'ı kapat
+    spark_processor.spark.stop()
+2. Gelişmiş Veri Analitiği Modülü (Dask/Modin)
+python
+# muco_advanced_analytics.py
+import pandas as pd
+import numpy as np
+import dask.dataframe as dd
+import dask.array as da
+from dask.distributed import Client, LocalCluster
+import modin.pandas as mpd
+import modin.config as cfg
+from typing import Dict, List, Any, Optional, Union
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
+
+# Özel tipler
+from dataclasses import dataclass
+from enum import Enum
+
+class AnalysisType(Enum):
+    DESCRIPTIVE = "descriptive"
+    PREDICTIVE = "predictive"
+    PRESCRIPTIVE = "prescriptive"
+    DIAGNOSTIC = "diagnostic"
+
+@dataclass
+class AnalysisConfig:
+    """Analiz konfigürasyonu"""
+    analysis_type: AnalysisType
+    data_source: str
+    target_column: str = None
+    feature_columns: List[str] = None
+    time_column: str = "timestamp"
+    group_column: str = None
+    sample_size: int = None
+    confidence_level: float = 0.95
+
+class MucoAdvancedAnalytics:
+    """MUCO Gelişmiş Veri Analitiği"""
+    
+    def __init__(self, use_dask: bool = True, use_modin: bool = False,
+                 n_workers: int = 4, memory_limit: str = "4GB"):
+        """
+        Analitik motoru başlatma
+        
+        Args:
+            use_dask: Dask kullanımı
+            use_modin: Modin kullanımı
+            n_workers: Worker sayısı
+            memory_limit: Memory limit
+        """
+        self.use_dask = use_dask
+        self.use_modin = use_modin
+        self.n_workers = n_workers
+        self.memory_limit = memory_limit
+        
+        # Dask client başlat
+        if use_dask:
+            self.client = self._initialize_dask_client()
+        
+        # Modin konfigürasyonu
+        if use_modin:
+            cfg.Engine.put("ray")  # veya "dask"
+        
+    def _initialize_dask_client(self) -> Client:
+        """Dask client başlatma"""
+        try:
+            # Local cluster oluştur
+            cluster = LocalCluster(
+                n_workers=self.n_workers,
+                threads_per_worker=2,
+                memory_limit=self.memory_limit,
+                processes=True
+            )
+            
+            # Client başlat
+            client = Client(cluster)
+            print(f"Dask Dashboard: {client.dashboard_link}")
+            
+            return client
+            
+        except Exception as e:
+            print(f"Dask initialization failed: {str(e)}")
+            # Fallback: Threaded client
+            return Client(processes=False)
+    
+    def load_large_dataset(self, file_path: str, 
+                          format: str = "parquet",
+                          engine: str = "auto",
+                          **kwargs) -> Union[pd.DataFrame, dd.DataFrame, mpd.DataFrame]:
+        """
+        Büyük veri seti yükleme
+        
+        Args:
+            file_path: Dosya yolu
+            format: Veri formatı
+            engine: Okuma motoru
+            **kwargs: Ek parametreler
+            
+        Returns:
+            Yüklenen veri seti
+        """
+        try:
+            if self.use_dask and format in ["parquet", "csv", "json"]:
+                # Dask ile yükleme
+                if format == "parquet":
+                    df = dd.read_parquet(file_path, engine=engine, **kwargs)
+                elif format == "csv":
+                    df = dd.read_csv(file_path, **kwargs)
+                elif format == "json":
+                    df = dd.read_json(file_path, **kwargs)
+                else:
+                    raise ValueError(f"Unsupported format for Dask: {format}")
+                
+                print(f"Dask DataFrame loaded: {len(df):,} rows (approx)")
+                return df
+                
+            elif self.use_modin:
+                # Modin ile yükleme
+                if format == "parquet":
+                    df = mpd.read_parquet(file_path, **kwargs)
+                elif format == "csv":
+                    df = mpd.read_csv(file_path, **kwargs)
+                elif format == "json":
+                    df = mpd.read_json(file_path, **kwargs)
+                else:
+                    raise ValueError(f"Unsupported format for Modin: {format}")
+                
+                print(f"Modin DataFrame loaded: {len(df):,} rows")
+                return df
+                
+            else:
+                # Pandas ile yükleme (chunking)
+                if format == "parquet":
+                    df = pd.read_parquet(file_path, **kwargs)
+                elif format == "csv":
+                    # Chunking for large CSV files
+                    chunks = []
+                    for chunk in pd.read_csv(file_path, chunksize=100000, **kwargs):
+                        chunks.append(chunk)
+                    df = pd.concat(chunks, ignore_index=True)
+                elif format == "json":
+                    df = pd.read_json(file_path, **kwargs)
+                else:
+                    raise ValueError(f"Unsupported format: {format}")
+                
+                print(f"Pandas DataFrame loaded: {len(df):,} rows")
+                return df
+                
+        except Exception as e:
+            print(f"Data loading failed: {str(e)}")
+            raise
+    
+    def perform_descriptive_analytics(self, df: Union[pd.DataFrame, dd.DataFrame],
+                                     config: AnalysisConfig) -> Dict[str, Any]:
+        """
+        Tanımlayıcı analitik
+        
+        Args:
+            df: Veri seti
+            config: Analiz konfigürasyonu
+            
+        Returns:
+            Tanımlayıcı analitik sonuçları
+        """
+        results = {
+            "analysis_type": "descriptive",
+            "timestamp": datetime.now().isoformat(),
+            "data_shape": {},
+            "summary_statistics": {},
+            "distribution_analysis": {},
+            "correlation_analysis": {},
+            "time_series_analysis": {},
+            "anomaly_detection": {}
+        }
+        
+        try:
+            # Veri şekli
+            if isinstance(df, dd.DataFrame):
+                results["data_shape"]["rows"] = len(df)
+                results["data_shape"]["columns"] = len(df.columns)
+                results["data_shape"]["memory_usage"] = df.memory_usage(deep=True).sum().compute()
+            else:
+                results["data_shape"]["rows"] = len(df)
+                results["data_shape"]["columns"] = len(df.columns)
+                results["data_shape"]["memory_usage"] = df.memory_usage(deep=True).sum()
+            
+            # Numerik kolonları bul
+            if isinstance(df, dd.DataFrame):
+                numeric_cols = df.select_dtypes(include=['float64', 'float32', 'int64', 'int32']).columns.tolist()
+            else:
+                numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            
+            # Özet istatistikler
+            if numeric_cols:
+                if isinstance(df, dd.DataFrame):
+                    desc_stats = df[numeric_cols].describe().compute()
+                else:
+                    desc_stats = df[numeric_cols].describe()
+                
+                results["summary_statistics"] = desc_stats.to_dict()
+            
+            # Dağılım analizi
+            for col in numeric_cols[:5]:  # İlk 5 numerik kolon
+                if isinstance(df, dd.DataFrame):
+                    col_data = df[col].compute()
+                else:
+                    col_data = df[col]
+                
+                # Histogram
+                hist, bins = np.histogram(col_data.dropna(), bins=50)
+                results["distribution_analysis"][col] = {
+                    "histogram": {
+                        "counts": hist.tolist(),
+                        "bins": bins.tolist()
+                    },
+                    "skewness": float(col_data.skew()),
+                    "kurtosis": float(col_data.kurtosis()),
+                    "normality_test": self._perform_normality_test(col_data)
+                }
+            
+            # Korelasyon analizi
+            if len(numeric_cols) > 1:
+                if isinstance(df, dd.DataFrame):
+                    corr_matrix = df[numeric_cols].corr().compute()
+                else:
+                    corr_matrix = df[numeric_cols].corr()
+                
+                results["correlation_analysis"] = {
+                    "matrix": corr_matrix.to_dict(),
+                    "high_correlations": self._find_high_correlations(corr_matrix)
+                }
+            
+            # Zaman serisi analizi
+            if config.time_column in df.columns:
+                ts_results = self._analyze_time_series(df, config)
+                results["time_series_analysis"] = ts_results
+            
+            # Anomali tespiti
+            if numeric_cols:
+                anomaly_results = self._detect_anomalies_batch(df, numeric_cols)
+                results["anomaly_detection"] = anomaly_results
+            
+            return results
+            
+        except Exception as e:
+            print(f"Descriptive analytics failed: {str(e)}")
+            raise
+    
+    def _perform_normality_test(self, data: pd.Series) -> Dict[str, float]:
+        """Normallik testi"""
+        from scipy import stats
+        
+        if len(data.dropna()) < 3:
+            return {"p_value": None, "is_normal": None}
+        
+        try:
+            # Shapiro-Wilk testi (3000 örnekle sınırlı)
+            test_data = data.dropna()
+            if len(test_data) > 3000:
+                test_data = test_data.sample(3000, random_state=42)
+            
+            stat, p_value = stats.shapiro(test_data)
+            
+            return {
+                "test": "shapiro_wilk",
+                "statistic": float(stat),
+                "p_value": float(p_value),
+                "is_normal": p_value > 0.05
+            }
+        except:
+            # Kolmogorov-Smirnov testi (fallback)
+            try:
+                stat, p_value = stats.kstest(test_data, 'norm')
+                return {
+                    "test": "kolmogorov_smirnov",
+                    "statistic": float(stat),
+                    "p_value": float(p_value),
+                    "is_normal": p_value > 0.05
+                }
+            except:
+                return {"p_value": None, "is_normal": None}
+    
+    def _find_high_correlations(self, corr_matrix: pd.DataFrame, 
+                               threshold: float = 0.8) -> List[Dict[str, Any]]:
+        """Yüksek korelasyonları bul"""
+        high_corrs = []
+        
+        for i in range(len(corr_matrix.columns)):
+            for j in range(i+1, len(corr_matrix.columns)):
+                corr = abs(corr_matrix.iloc[i, j])
+                if corr > threshold:
+                    high_corrs.append({
+                        "feature1": corr_matrix.columns[i],
+                        "feature2": corr_matrix.columns[j],
+                        "correlation": float(corr),
+                        "type": "positive" if corr_matrix.iloc[i, j] > 0 else "negative"
+                    })
+        
+        return sorted(high_corrs, key=lambda x: abs(x["correlation"]), reverse=True)
+    
+    def _analyze_time_series(self, df: Union[pd.DataFrame, dd.DataFrame],
+                            config: AnalysisConfig) -> Dict[str, Any]:
+        """Zaman serisi analizi"""
+        results = {}
+        
+        try:
+            time_col = config.time_column
+            target_col = config.target_column
+            
+            if target_col and target_col in df.columns and time_col in df.columns:
+                if isinstance(df, dd.DataFrame):
+                    ts_df = df[[time_col, target_col]].compute()
+                else:
+                    ts_df = df[[time_col, target_col]].copy()
+                
+                # Zaman serisi istatistikleri
+                ts_df[time_col] = pd.to_datetime(ts_df[time_col])
+                ts_df = ts_df.sort_values(time_col)
+                
+                results["basic_stats"] = {
+                    "start_date": ts_df[time_col].min().isoformat(),
+                    "end_date": ts_df[time_col].max().isoformat(),
+                    "duration_days": (ts_df[time_col].max() - ts_df[time_col].min()).days,
+                    "frequency": self._detect_frequency(ts_df[time_col]),
+                    "missing_dates": self._find_missing_dates(ts_df[time_col])
+                }
+                
+                # Trend analizi
+                results["trend_analysis"] = self._analyze_trend(ts_df[target_col])
+                
+                # Seasonality analizi
+                results["seasonality_analysis"] = self._analyze_seasonality(ts_df, time_col, target_col)
+                
+                # Stationarity test
+                results["stationarity_test"] = self._test_stationarity(ts_df[target_col])
+                
+                # Autocorrelation
+                results["autocorrelation"] = self._calculate_autocorrelation(ts_df[target_col])
+            
+            return results
+            
+        except Exception as e:
+            print(f"Time series analysis failed: {str(e)}")
+            return {}
+    
+    def _detect_frequency(self, time_series: pd.Series) -> str:
+        """Zaman serisi frekansı tespiti"""
+        if len(time_series) < 2:
+            return "unknown"
+        
+        diffs = time_series.diff().dropna()
+        if len(diffs) == 0:
+            return "unknown"
+        
+        # En yaygın farkı bul
+        mode_diff = diffs.mode()
+        if len(mode_diff) > 0:
+            diff_hours = mode_diff.iloc[0].total_seconds() / 3600
+            
+            if diff_hours == 1:
+                return "hourly"
+            elif diff_hours == 24:
+                return "daily"
+            elif diff_hours == 168:  # 7 days
+                return "weekly"
+            elif 28 <= diff_hours <= 31:
+                return "monthly"
+            else:
+                return f"custom_{diff_hours}h"
+        
+        return "irregular"
+    
+    def _find_missing_dates(self, time_series: pd.Series) -> Dict[str, Any]:
+        """Eksik tarihleri bul"""
+        if len(time_series) < 2:
+            return {"missing_count": 0, "gaps": []}
+        
+        time_series = pd.to_datetime(time_series)
+        time_series = time_series.sort_values()
+        
+        # Tarih aralığı oluştur
+        full_range = pd.date_range(start=time_series.min(), end=time_series.max())
+        missing_dates = full_range.difference(time_series)
+        
+        # Eksik tarih gruplarını bul
+        gaps = []
+        if len(missing_dates) > 0:
+            missing_dates = missing_dates.sort_values()
+            current_gap = [missing_dates[0]]
+            
+            for date in missing_dates[1:]:
+                if (date - current_gap[-1]).days == 1:
+                    current_gap.append(date)
+                else:
+                    gaps.append({
+                        "start": current_gap[0].isoformat(),
+                        "end": current_gap[-1].isoformat(),
+                        "duration_days": (current_gap[-1] - current_gap[0]).days + 1
+                    })
+                    current_gap = [date]
+            
+            # Son gap
+            if current_gap:
+                gaps.append({
+                    "start": current_gap[0].isoformat(),
+                    "end": current_gap[-1].isoformat(),
+                    "duration_days": (current_gap[-1] - current_gap[0]).days + 1
+                })
+        
+        return {
+            "missing_count": len(missing_dates),
+            "missing_percentage": len(missing_dates) / len(full_range) * 100,
+            "gaps": gaps[:10]  # İlk 10 gap
+        }
+    
+    def _analyze_trend(self, series: pd.Series) -> Dict[str, Any]:
+        """Trend analizi"""
+        if len(series.dropna()) < 2:
+            return {}
+        
+        # Linear trend
+        x = np.arange(len(series))
+        y = series.values
+        mask = ~np.isnan(y)
+        
+        if np.sum(mask) < 2:
+            return {}
+        
+        x_clean = x[mask]
+        y_clean = y[mask]
+        
+        # Linear regression
+        slope, intercept = np.polyfit(x_clean, y_clean, 1)
+        trend_line = slope * x + intercept
+        
+        # Trend strength (R-squared)
+        y_pred = slope * x_clean + intercept
+        ss_res = np.sum((y_clean - y_pred) ** 2)
+        ss_tot = np.sum((y_clean - np.mean(y_clean)) ** 2)
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+        
+        # Mann-Kendall trend test
+        from scipy import stats
+        
+        tau, p_value = stats.kendalltau(x_clean, y_clean)
+        
+        return {
+            "slope": float(slope),
+            "intercept": float(intercept),
+            "r_squared": float(r_squared),
+            "trend_strength": "strong" if abs(tau) > 0.7 else "moderate" if abs(tau) > 0.3 else "weak",
+            "trend_direction": "increasing" if slope > 0 else "decreasing",
+            "mann_kendall_tau": float(tau),
+            "mann_kendall_p_value": float(p_value),
+            "significant_trend": p_value < 0.05
+        }
+    
+    def _analyze_seasonality(self, df: pd.DataFrame, 
+                            time_col: str, 
+                            target_col: str) -> Dict[str, Any]:
+        """Seasonality analizi"""
+        results = {}
+        
+        try:
+            # Zaman bileşenlerini çıkar
+            df['year'] = df[time_col].dt.year
+            df['month'] = df[time_col].dt.month
+            df['day'] = df[time_col].dt.day
+            df['dayofweek'] = df[time_col].dt.dayofweek
+            df['hour'] = df[time_col].dt.hour
+            
+            # Aylık seasonality
+            monthly_avg = df.groupby('month')[target_col].mean()
+            if len(monthly_avg) > 1:
+                results["monthly_seasonality"] = {
+                    "pattern": monthly_avg.to_dict(),
+                    "strength": float(monthly_avg.std() / monthly_avg.mean()) if monthly_avg.mean() != 0 else 0
+                }
+            
+            # Haftalık seasonality
+            weekly_avg = df.groupby('dayofweek')[target_col].mean()
+            if len(weekly_avg) > 1:
+                results["weekly_seasonality"] = {
+                    "pattern": weekly_avg.to_dict(),
+                    "strength": float(weekly_avg.std() / weekly_avg.mean()) if weekly_avg.mean() != 0 else 0
+                }
+            
+            # Saatlik seasonality (eğer saat verisi varsa)
+            if 'hour' in df.columns and df['hour'].nunique() > 1:
+                hourly_avg = df.groupby('hour')[target_col].mean()
+                results["hourly_seasonality"] = {
+                    "pattern": hourly_avg.to_dict(),
+                    "strength": float(hourly_avg.std() / hourly_avg.mean()) if hourly_avg.mean() != 0 else 0
+                }
+            
+            # Fourier analysis for seasonality detection
+            results["fourier_analysis"] = self._fourier_seasonality_analysis(df[target_col])
+            
+            return results
+            
+        except Exception as e:
+            print(f"Seasonality analysis failed: {str(e)}")
+            return {}
+    
+    def _fourier_seasonality_analysis(self, series: pd.Series) -> Dict[str, Any]:
+        """Fourier analizi ile seasonality tespiti"""
+        if len(series.dropna()) < 10:
+            return {}
+        
+        # Fill missing values
+        series_filled = series.fillna(method='ffill').fillna(method='bfill')
+        
+        # FFT
+        fft_values = np.fft.fft(series_filled.values)
+        fft_freq = np.fft.fftfreq(len(series_filled))
+        
+        # Dominant frekanslar
+        magnitudes = np.abs(fft_values)
+        idx = np.argsort(magnitudes)[::-1][1:6]  # Skip DC component
+        
+        dominant_freqs = []
+        for i in idx:
+            freq = fft_freq[i]
+            magnitude = magnitudes[i]
+            period = 1/abs(freq) if freq != 0 else 0
+            
+            dominant_freqs.append({
+                "frequency": float(freq),
+                "magnitude": float(magnitude),
+                "period": float(period),
+                "period_days": float(period) if period > 0 else 0
+            })
+        
+        return {
+            "dominant_frequencies": dominant_freqs,
+            "total_energy": float(np.sum(magnitudes ** 2)),
+            "seasonal_strength": float(np.sum(magnitudes[1:6] ** 2) / np.sum(magnitudes ** 2))
+        }
+    
+    def _test_stationarity(self, series: pd.Series) -> Dict[str, Any]:
+        """Stationarity test"""
+        from statsmodels.tsa.stattools import adfuller, kpss
+        
+        if len(series.dropna()) < 4:
+            return {}
+        
+        series_clean = series.dropna()
+        
+        # ADF test
+        try:
+            adf_result = adfuller(series_clean)
+            adf_stationary = adf_result[1] < 0.05
+        except:
+            adf_result = (None, None, None, None, None)
+            adf_stationary = None
+        
+        # KPSS test
+        try:
+            kpss_result = kpss(series_clean, regression='c')
+            kpss_stationary = kpss_result[1] > 0.05
+        except:
+            kpss_result = (None, None, None, None)
+            kpss_stationary = None
+        
+        return {
+            "adf_test": {
+                "statistic": adf_result[0] if adf_result[0] else None,
+                "p_value": adf_result[1] if adf_result[1] else None,
+                "stationary": adf_stationary
+            },
+            "kpss_test": {
+                "statistic": kpss_result[0] if kpss_result[0] else None,
+                "p_value": kpss_result[1] if kpss_result[1] else None,
+                "stationary": kpss_stationary
+            },
+            "overall_stationarity": adf_stationary and kpss_stationary if adf_stationary is not None and kpss_stationary is not None else None
+        }
+    
+    def _calculate_autocorrelation(self, series: pd.Series, 
+                                  max_lag: int = 20) -> Dict[str, Any]:
+        """Autocorrelation hesaplama"""
+        if len(series.dropna()) < max_lag + 1:
+            return {}
+        
+        series_clean = series.dropna()
+        autocorrs = []
+        partial_autocorrs = []
+        
+        # ACF
+        for lag in range(1, min(max_lag + 1, len(series_clean))):
+            if lag < len(series_clean):
+                autocorr = series_clean.autocorr(lag=lag)
+                if not np.isnan(autocorr):
+                    autocorrs.append({"lag": lag, "acf": float(autocorr)})
+        
+        # PACF (basitleştirilmiş)
+        if len(series_clean) > 2:
+            try:
+                from statsmodels.tsa.stattools import pacf
+                pacf_values = pacf(series_clean, nlags=min(max_lag, len(series_clean)//2))
+                for lag, value in enumerate(pacf_values[1:], 1):
+                    partial_autocorrs.append({"lag": lag, "pacf": float(value)})
+            except:
+                pass
+        
+        # Ljung-Box test
+        try:
+            from statsmodels.stats.diagnostic import acorr_ljungbox
+            lb_test = acorr_ljungbox(series_clean, lags=[5, 10, 20], return_df=True)
+            lb_results = []
+            for idx, row in lb_test.iterrows():
+                lb_results.append({
+                    "lags": idx,
+                    "statistic": float(row['lb_stat']),
+                    "p_value": float(row['lb_pvalue']),
+                    "significant": row['lb_pvalue'] < 0.05
+                })
+        except:
+            lb_results = []
+        
+        return {
+            "acf": autocorrs,
+            "pacf": partial_autocorrs[:10],  # İlk 10
+            "ljung_box_test": lb_results,
+            "has_autocorrelation": any(abs(ac["acf"]) > 0.3 for ac in autocorrs[:5])
+        }
+    
+    def _detect_anomalies_batch(self, df: Union[pd.DataFrame, dd.DataFrame],
+                               numeric_cols: List[str]) -> Dict[str, Any]:
+        """Toplu anomali tespiti"""
+        results = {
+            "anomaly_summary": {},
+            "detection_methods": {}
+        }
+        
+        try:
+            # IQR metodu
+            iqr_results = {}
+            for col in numeric_cols[:10]:  # İlk 10 kolon
+                if isinstance(df, dd.DataFrame):
+                    col_data = df[col].compute()
+                else:
+                    col_data = df[col]
+                
+                q1 = col_data.quantile(0.25)
+                q3 = col_data.quantile(0.75)
+                iqr = q3 - q1
+                
+                lower_bound = q1 - 1.5 * iqr
+                upper_bound = q3 + 1.5 * iqr
+                
+                anomalies = col_data[(col_data < lower_bound) | (col_data > upper_bound)]
+                anomaly_percentage = len(anomalies) / len(col_data) * 100
+                
+                iqr_results[col] = {
+                    "anomaly_count": int(len(anomalies)),
+                    "anomaly_percentage": float(anomaly_percentage),
+                    "lower_bound": float(lower_bound),
+                    "upper_bound": float(upper_bound),
+                    "min_anomaly": float(anomalies.min()) if len(anomalies) > 0 else None,
+                    "max_anomaly": float(anomalies.max()) if len(anomalies) > 0 else None
+                }
+            
+            results["detection_methods"]["iqr"] = iqr_results
+            
+            # Z-score metodu (önemli kolonlar için)
+            zscore_results = {}
+            significant_cols = numeric_cols[:5]
+            
+            for col in significant_cols:
+                if isinstance(df, dd.DataFrame):
+                    col_data = df[col].compute()
+                else:
+                    col_data = df[col]
+                
+                mean_val = col_data.mean()
+                std_val = col_data.std()
+                
+                if std_val > 0:
+                    z_scores = (col_data - mean_val) / std_val
+                    anomalies = col_data[abs(z_scores) > 3]
+                    anomaly_percentage = len(anomalies) / len(col_data) * 100
+                    
+                    zscore_results[col] = {
+                        "anomaly_count": int(len(anomalies)),
+                        "anomaly_percentage": float(anomaly_percentage),
+                        "mean": float(mean_val),
+                        "std": float(std_val),
+                        "max_z_score": float(z_scores.max()) if len(z_scores) > 0 else None
+                    }
+            
+            results["detection_methods"]["zscore"] = zscore_results
+            
+            # Toplam anomali özeti
+            total_anomalies = 0
+            total_rows = len(df) if not isinstance(df, dd.DataFrame) else len(df.compute())
+            
+            for col_results in iqr_results.values():
+                total_anomalies += col_results["anomaly_count"]
+            
+            results["anomaly_summary"] = {
+                "total_anomalies": total_anomalies,
+                "anomaly_percentage": total_anomalies / total_rows * 100 if total_rows > 0 else 0,
+                "columns_with_anomalies": len([c for c in iqr_results.values() if c["anomaly_count"] > 0]),
+                "most_anomalous_column": max(iqr_results.items(), 
+                                           key=lambda x: x[1]["anomaly_percentage"])[0] if iqr_results else None
+            }
+            
+            return results
+            
+        except Exception as e:
+            print(f"Anomaly detection failed: {str(e)}")
+            return {}
+    
+    def perform_predictive_analytics(self, df: Union[pd.DataFrame, dd.DataFrame],
+                                    config: AnalysisConfig) -> Dict[str, Any]:
+        """
+        Tahmine dayalı analitik
+        
+        Args:
+            df: Veri seti
+            config: Analiz konfigürasyonu
+            
+        Returns:
+            Tahmine dayalı analitik sonuçları
+        """
+        results = {
+            "analysis_type": "predictive",
+            "timestamp": datetime.now().isoformat(),
+            "models": {},
+            "feature_importance": {},
+            "forecasts": {},
+            "model_comparison": {}
+        }
+        
+        try:
+            if not config.target_column or config.target_column not in df.columns:
+                raise ValueError("Target column is required for predictive analytics")
+            
+            # Veriyi hazırla
+            if isinstance(df, dd.DataFrame):
+                data = df.compute()
+            else:
+                data = df.copy()
+            
+            # Eksik değerleri işle
+            data = self._handle_missing_values(data)
+            
+            # Feature selection
+            features = config.feature_columns or [col for col in data.columns 
+                                                if col != config.target_column and col != config.time_column]
+            
+            # Model eğitimi
+            models = self._train_predictive_models(data, features, config.target_column)
+            results["models"] = models
+            
+            # Feature importance
+            results["feature_importance"] = self._calculate_feature_importance(
+                data, features, config.target_column
+            )
+            
+            # Tahminler
+            results["forecasts"] = self._generate_forecasts(data, config, models)
+            
+            # Model karşılaştırması
+            results["model_comparison"] = self._compare_models(models)
+            
+            return results
+            
+        except Exception as e:
+            print(f"Predictive analytics failed: {str(e)}")
+            raise
+    
+    def _handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Eksik değer işleme"""
+        df_clean = df.copy()
+        
+        # Numerik kolonlar için
+        numeric_cols = df_clean.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            if df_clean[col].isnull().any():
+                # Median ile doldur
+                median_val = df_clean[col].median()
+                df_clean[col] = df_clean[col].fillna(median_val)
+        
+        # Kategorik kolonlar için
+        categorical_cols = df_clean.select_dtypes(include=['object', 'category']).columns
+        for col in categorical_cols:
+            if df_clean[col].isnull().any():
+                # Mod ile doldur
+                mode_val = df_clean[col].mode()[0] if not df_clean[col].mode().empty else "missing"
+                df_clean[col] = df_clean[col].fillna(mode_val)
+        
+        return df_clean
+    
+    def _train_predictive_models(self, data: pd.DataFrame, 
+                                features: List[str],
+                                target: str) -> Dict[str, Any]:
+        """Tahmine dayalı modeller eğit"""
+        from sklearn.model_selection import train_test_split
+        from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+        from sklearn.linear_model import LinearRegression, Ridge
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+        
+        models = {}
+        
+        try:
+            # Train-test split
+            X = data[features]
+            y = data[target]
+            
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.2, random_state=42
+            )
+            
+            # Model listesi
+            model_configs = [
+                ("linear_regression", LinearRegression()),
+                ("ridge_regression", Ridge(alpha=1.0)),
+                ("random_forest", RandomForestRegressor(n_estimators=100, random_state=42)),
+                ("gradient_boosting", GradientBoostingRegressor(n_estimators=100, random_state=42))
+            ]
+            
+            # Model eğitimi
+            for model_name, model in model_configs:
+                try:
+                    model.fit(X_train, y_train)
+                    
+                    # Tahminler
+                    y_pred_train = model.predict(X_train)
+                    y_pred_test = model.predict(X_test)
+                    
+                    # Metrikler
+                    train_metrics = {
+                        "mse": mean_squared_error(y_train, y_pred_train),
+                        "rmse": np.sqrt(mean_squared_error(y_train, y_pred_train)),
+                        "mae": mean_absolute_error(y_train, y_pred_train),
+                        "r2": r2_score(y_train, y_pred_train)
+                    }
+                    
+                    test_metrics = {
+                        "mse": mean_squared_error(y_test, y_pred_test),
+                        "rmse": np.sqrt(mean_squared_error(y_test, y_pred_test)),
+                        "mae": mean_absolute_error(y_test, y_pred_test),
+                        "r2": r2_score(y_test, y_pred_test)
+                    }
+                    
+                    # Overfitting kontrolü
+                    overfitting_score = abs(train_metrics["r2"] - test_metrics["r2"])
+                    
+                    models[model_name] = {
+                        "model": model,
+                        "train_metrics": train_metrics,
+                        "test_metrics": test_metrics,
+                        "overfitting_score": overfitting_score,
+                        "overfitting_detected": overfitting_score > 0.1
+                    }
+                    
+                except Exception as e:
+                    print(f"Model {model_name} training failed: {str(e)}")
+                    continue
+            
+            return models
+            
+        except Exception as e:
+            print(f"Model training failed: {str(e)}")
+            raise
+    
+    def _calculate_feature_importance(self, data: pd.DataFrame,
+                                     features: List[str],
+                                     target: str) -> Dict[str, Any]:
+        """Feature importance hesaplama"""
+        from sklearn.ensemble import RandomForestRegressor
+        from sklearn.feature_selection import mutual_info_regression
+        
+        importance_results = {
+            "random_forest_importance": {},
+            "mutual_information": {},
+            "correlation_with_target": {}
+        }
+        
+        try:
+            X = data[features]
+            y = data[target]
+            
+            # Random Forest feature importance
+            rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
+            rf_model.fit(X, y)
+            
+            for feature, importance in zip(features, rf_model.feature_importances_):
+                importance_results["random_forest_importance"][feature] = float(importance)
+            
+            # Mutual information
+            mi_scores = mutual_info_regression(X, y, random_state=42)
+            for feature, score in zip(features, mi_scores):
+                importance_results["mutual_information"][feature] = float(score)
+            
+            # Correlation with target
+            for feature in features:
+                corr = data[[feature, target]].corr().iloc[0, 1]
+                importance_results["correlation_with_target"][feature] = float(corr)
+            
+            # Top 10 features
+            sorted_features = sorted(
+                importance_results["random_forest_importance"].items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:10]
+            
+            importance_results["top_10_features"] = [
+                {"feature": feat, "importance": imp} for feat, imp in sorted_features
+            ]
+            
+            return importance_results
+            
+        except Exception as e:
+            print(f"Feature importance calculation failed: {str(e)}")
+            return {}
+    
+    def _generate_forecasts(self, data: pd.DataFrame,
+                           config: AnalysisConfig,
+                           models: Dict[str, Any]) -> Dict[str, Any]:
+        """Tahminler üret"""
+        forecasts = {}
+        
+        try:
+            if config.time_column in data.columns:
+                # Zaman serisi tahmini
+                time_series_forecast = self._forecast_time_series(data, config)
+                forecasts["time_series"] = time_series_forecast
+            
+            # Model bazlı tahminler
+            for model_name, model_info in models.items():
+                if "model" in model_info:
+                    # Örnek tahminler
+                    sample_data = data[config.feature_columns].iloc[:10]
+                    predictions = model_info["model"].predict(sample_data)
+                    
+                    forecasts[model_name] = {
+                        "sample_predictions": predictions.tolist(),
+                        "prediction_range": {
+                            "min": float(predictions.min()),
+                            "max": float(predictions.max()),
+                            "mean": float(predictions.mean()),
+                            "std": float(predictions.std())
+                        }
+                    }
+            
+            return forecasts
+            
+        except Exception as e:
+            print(f"Forecast generation failed: {str(e)}")
+            return {}
+    
+    def _forecast_time_series(self, data: pd.DataFrame,
+                             config: AnalysisConfig) -> Dict[str, Any]:
+        """Zaman serisi tahmini"""
+        from statsmodels.tsa.arima.model import ARIMA
+        from statsmodels.tsa.holtwinters import ExponentialSmoothing
+        
+        forecast_results = {}
+        
+        try:
+            if config.time_column not in data.columns or config.target_column not in data.columns:
+                return forecast_results
+            
+            # Zaman serisini hazırla
+            ts_data = data[[config.time_column, config.target_column]].copy()
+            ts_data[config.time_column] = pd.to_datetime(ts_data[config.time_column])
+            ts_data = ts_data.set_index(config.time_column).sort_index()
+            
+            # Son 30 gün için tahmin
+            forecast_horizon = 30
+            
+            # ARIMA modeli
+            try:
+                arima_model = ARIMA(ts_data[config.target_column], order=(1,1,1))
+                arima_fit = arima_model.fit()
+                arima_forecast = arima_fit.forecast(steps=forecast_horizon)
+                
+                forecast_results["arima"] = {
+                    "forecast": arima_forecast.tolist(),
+                    "confidence_intervals": arima_fit.get_forecast(steps=forecast_horizon).conf_int().values.tolist()
+                }
+            except Exception as e:
+                forecast_results["arima"] = {"error": str(e)}
+            
+            # Exponential Smoothing
+            try:
+                es_model = ExponentialSmoothing(ts_data[config.target_column], 
+                                               seasonal_periods=7,
+                                               trend='add', seasonal='add')
+                es_fit = es_model.fit()
+                es_forecast = es_fit.forecast(forecast_horizon)
+                
+                forecast_results["exponential_smoothing"] = {
+                    "forecast": es_forecast.tolist()
+                }
+            except Exception as e:
+                forecast_results["exponential_smoothing"] = {"error": str(e)}
+            
+            # Naive forecast (baseline)
+            last_value = ts_data[config.target_column].iloc[-1]
+            naive_forecast = [last_value] * forecast_horizon
+            
+            forecast_results["naive"] = {
+                "forecast": naive_forecast,
+                "method": "last_observation"
+            }
+            
+            # Forecast kombinasyonu
+            all_forecasts = []
+            for method, result in forecast_results.items():
+                if "forecast" in result and not "error" in result:
+                    all_forecasts.append(result["forecast"])
+            
+            if all_forecasts:
+                combined_forecast = np.mean(all_forecasts, axis=0)
+                forecast_results["combined"] = {
+                    "forecast": combined_forecast.tolist(),
+                    "methods_used": [m for m in forecast_results.keys() 
+                                   if "forecast" in forecast_results[m] and not "error" in forecast_results[m]]
+                }
+            
+            return forecast_results
+            
+        except Exception as e:
+            print(f"Time series forecasting failed: {str(e)}")
+            return {}
+    
+    def _compare_models(self, models: Dict[str, Any]) -> Dict[str, Any]:
+        """Model karşılaştırması"""
+        comparison = {
+            "performance_comparison": {},
+            "best_model": None,
+            "ranking": []
+        }
+        
+        try:
+            # Performans metriklerini topla
+            performance_data = []
+            
+            for model_name, model_info in models.items():
+                if "test_metrics" in model_info:
+                    metrics = model_info["test_metrics"]
+                    performance_data.append({
+                        "model": model_name,
+                        "rmse": metrics.get("rmse", 0),
+                        "mae": metrics.get("mae", 0),
+                        "r2": metrics.get("r2", 0),
+                        "overfitting_score": model_info.get("overfitting_score", 0)
+                    })
+            
+            if performance_data:
+                # DataFrame'e çevir
+                perf_df = pd.DataFrame(performance_data)
+                
+                # RMSE'ye göre sırala (küçük olan daha iyi)
+                perf_df["rank_rmse"] = perf_df["rmse"].rank(ascending=True)
+                
+                # R2'ye göre sırala (büyük olan daha iyi)
+                perf_df["rank_r2"] = perf_df["r2"].rank(ascending=False)
+                
+                # Kombine sıralama
+                perf_df["combined_rank"] = (perf_df["rank_rmse"] + perf_df["rank_r2"]) / 2
+                perf_df = perf_df.sort_values("combined_rank")
+                
+                # En iyi model
+                best_model_row = perf_df.iloc[0]
+                comparison["best_model"] = {
+                    "name": best_model_row["model"],
+                    "rmse": float(best_model_row["rmse"]),
+                    "r2": float(best_model_row["r2"]),
+                    "combined_rank": float(best_model_row["combined_rank"])
+                }
+                
+                # Sıralama
+                comparison["ranking"] = perf_df[["model", "rmse", "r2", "combined_rank"]].to_dict('records')
+                
+                # Performans karşılaştırması
+                comparison["performance_comparison"] = {
+                    "rmse_range": {
+                        "min": float(perf_df["rmse"].min()),
+                        "max": float(perf_df["rmse"].max()),
+                        "mean": float(perf_df["rmse"].mean())
+                    },
+                    "r2_range": {
+                        "min": float(perf_df["r2"].min()),
+                        "max": float(perf_df["r2"].max()),
+                        "mean": float(perf_df["r2"].mean())
+                    },
+                    "improvement_over_baseline": {
+                        "rmse_improvement": float((perf_df["rmse"].max() - best_model_row["rmse"]) / perf_df["rmse"].max() * 100),
+                        "r2_improvement": float((best_model_row["r2"] - perf_df["r2"].min()) / abs(perf_df["r2"].min()) * 100) if perf_df["r2"].min() != 0 else 0
+                    }
+                }
+            
+            return comparison
+            
+        except Exception as e:
+            print(f"Model comparison failed: {str(e)}")
+            return {}
+    
+    def perform_cluster_analysis(self, df: Union[pd.DataFrame, dd.DataFrame],
+                                numeric_cols: List[str],
+                                n_clusters: int = 5) -> Dict[str, Any]:
+        """
+        Kümeleme analizi
+        
+        Args:
+            df: Veri seti
+            numeric_cols: Numerik kolonlar
+            n_clusters: Küme sayısı
+            
+        Returns:
+            Kümeleme analizi sonuçları
+        """
+        from sklearn.cluster import KMeans, DBSCAN
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.metrics import silhouette_score, calinski_harabasz_score
+        
+        results = {
+            "analysis_type": "clustering",
+            "timestamp": datetime.now().isoformat(),
+            "clustering_results": {},
+            "optimal_clusters": {},
+            "cluster_profiles": {},
+            "visualization_data": {}
+        }
+        
+        try:
+            # Veriyi hazırla
+            if isinstance(df, dd.DataFrame):
+                cluster_data = df[numeric_cols].compute()
+            else:
+                cluster_data = df[numeric_cols].copy()
+            
+            # Eksik değerleri işle
+            cluster_data = cluster_data.fillna(cluster_data.median())
+            
+            # Standardize et
+            scaler = StandardScaler()
+            scaled_data = scaler.fit_transform(cluster_data)
+            
+            # Optimal küme sayısını bul (Elbow method)
+            wcss = []  # Within-cluster sum of squares
+            silhouette_scores = []
+            k_range = range(2, min(11, len(cluster_data)))
+            
+            for k in k_range:
+                kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+                kmeans.fit(scaled_data)
+                wcss.append(kmeans.inertia_)
+                
+                if k > 1:
+                    silhouette_avg = silhouette_score(scaled_data, kmeans.labels_)
+                    silhouette_scores.append(silhouette_avg)
+            
+            # Elbow point hesapla
+            elbow_point = self._find_elbow_point(wcss)
+            
+            results["optimal_clusters"] = {
+                "wcss_values": wcss,
+                "silhouette_scores": silhouette_scores,
+                "elbow_point": elbow_point,
+                "recommended_clusters": elbow_point if elbow_point else 3
+            }
+            
+            # K-means kümeleme
+            optimal_k = results["optimal_clusters"]["recommended_clusters"]
+            kmeans = KMeans(n_clusters=optimal_k, random_state=42, n_init=10)
+            cluster_labels = kmeans.fit_predict(scaled_data)
+            
+            # Küme istatistikleri
+            cluster_data['cluster'] = cluster_labels
+            
+            results["clustering_results"]["kmeans"] = {
+                "n_clusters": optimal_k,
+                "cluster_labels": cluster_labels.tolist(),
+                "cluster_centers": kmeans.cluster_centers_.tolist(),
+                "inertia": float(kmeans.inertia_),
+                "silhouette_score": float(silhouette_score(scaled_data, cluster_labels)),
+                "calinski_harabasz_score": float(calinski_harabasz_score(scaled_data, cluster_labels))
+            }
+            
+            # Küme profilleri
+            cluster_profiles = {}
+            for cluster_id in range(optimal_k):
+                cluster_points = cluster_data[cluster_data['cluster'] == cluster_id]
+                
+                profile = {
+                    "size": int(len(cluster_points)),
+                    "percentage": len(cluster_points) / len(cluster_data) * 100,
+                    "centroid": kmeans.cluster_centers_[cluster_id].tolist(),
+                    "feature_means": {}
+                }
+                
+                # Her feature için istatistikler
+                for col in numeric_cols:
+                    profile["feature_means"][col] = {
+                        "mean": float(cluster_points[col].mean()),
+                        "std": float(cluster_points[col].std()),
+                        "min": float(cluster_points[col].min()),
+                        "max": float(cluster_points[col].max())
+                    }
+                
+                cluster_profiles[f"cluster_{cluster_id}"] = profile
+            
+            results["cluster_profiles"] = cluster_profiles
+            
+            # DBSCAN kümeleme (noise detection için)
+            try:
+                dbscan = DBSCAN(eps=0.5, min_samples=5)
+                dbscan_labels = dbscan.fit_predict(scaled_data)
+                
+                n_clusters_dbscan = len(set(dbscan_labels)) - (1 if -1 in dbscan_labels else 0)
+                n_noise = list(dbscan_labels).count(-1)
+                
+                results["clustering_results"]["dbscan"] = {
+                    "n_clusters": n_clusters_dbscan,
+                    "n_noise": n_noise,
+                    "noise_percentage": n_noise / len(cluster_data) * 100,
+                    "labels": dbscan_labels.tolist()
+                }
+            except Exception as e:
+                results["clustering_results"]["dbscan"] = {"error": str(e)}
+            
+            # Görselleştirme için veri
+            if len(numeric_cols) >= 2:
+                # PCA ile boyut indirgeme
+                from sklearn.decomposition import PCA
+                
+                pca = PCA(n_components=2)
+                pca_result = pca.fit_transform(scaled_data)
+                
+                results["visualization_data"] = {
+                    "pca_components": pca_result.tolist(),
+                    "explained_variance": pca.explained_variance_ratio_.tolist(),
+                    "cluster_labels": cluster_labels.tolist(),
+                    "features": numeric_cols[:2]  # İlk 2 feature için scatter plot
+                }
+            
+            return results
+            
+        except Exception as e:
+            print(f"Cluster analysis failed: {str(e)}")
+            raise
+    
+    def _find_elbow_point(self, wcss: List[float]) -> int:
+        """Elbow point tespiti"""
+        if len(wcss) < 3:
+            return None
+        
+        # İkinci türev maksimumunu bul
+        first_derivative = np.diff(wcss)
+        second_derivative = np.diff(first_derivative)
+        
+        if len(second_derivative) > 0:
+            elbow_idx = np.argmax(second_derivative) + 2  # +2 because of double diff
+            return min(elbow_idx, len(wcss) - 1)
+        
+        return None
+    
+    def create_interactive_dashboard(self, analytics_results: Dict[str, Any],
+                                    dashboard_type: str = "descriptive") -> Dict[str, Any]:
+        """
+        İnteraktif dashboard oluştur
+        
+        Args:
+            analytics_results: Analiz sonuçları
+            dashboard_type: Dashboard tipi
+            
+        Returns:
+            Dashboard konfigürasyonu
+        """
+        dashboard = {
+            "dashboard_type": dashboard_type,
+            "created_at": datetime.now().isoformat(),
+            "widgets": [],
+            "layout": {},
+            "data_sources": {},
+            "interactive_elements": {}
+        }
+        
+        try:
+            if dashboard_type == "descriptive":
+                dashboard = self._create_descriptive_dashboard(analytics_results, dashboard)
+            elif dashboard_type == "predictive":
+                dashboard = self._create_predictive_dashboard(analytics_results, dashboard)
+            elif dashboard_type == "clustering":
+                dashboard = self._create_clustering_dashboard(analytics_results, dashboard)
+            
+            return dashboard
+            
+        except Exception as e:
+            print(f"Dashboard creation failed: {str(e)}")
+            return dashboard
+    
+    def _create_descriptive_dashboard(self, results: Dict[str, Any],
+                                     dashboard: Dict[str, Any]) -> Dict[str, Any]:
+        """Tanımlayıcı dashboard oluştur"""
+        # Summary widgets
+        dashboard["widgets"].append({
+            "id": "summary_stats",
+            "type": "summary_cards",
+            "title": "Veri Özeti",
+            "data": {
+                "row_count": results.get("data_shape", {}).get("rows", 0),
+                "column_count": results.get("data_shape", {}).get("columns", 0),
+                "missing_values": sum(v.get("count", 0) for v in results.get("missing_values", {}).values()),
+                "anomaly_percentage": results.get("anomaly_detection", {}).get("anomaly_summary", {}).get("anomaly_percentage", 0)
+            },
+            "position": {"x": 0, "y": 0, "w": 12, "h": 2}
+        })
+        
+        # Distribution widgets
+        if "distribution_analysis" in results:
+            for feature, dist_data in list(results["distribution_analysis"].items())[:3]:
+                dashboard["widgets"].append({
+                    "id": f"dist_{feature}",
+                    "type": "histogram",
+                    "title": f"{feature} Dağılımı",
+                    "data": dist_data.get("histogram", {}),
+                    "position": {"x": (idx % 3) * 4, "y": 2, "w": 4, "h": 3}
+                })
+        
+        # Correlation matrix
+        if "correlation_analysis" in results:
+            dashboard["widgets"].append({
+                "id": "correlation_matrix",
+                "type": "heatmap",
+                "title": "Korelasyon Matrisi",
+                "data": results["correlation_analysis"].get("matrix", {}),
+                "position": {"x": 0, "y": 5, "w": 8, "h": 4}
+            })
+        
+        # Time series widgets
+        if "time_series_analysis" in results:
+            ts_data = results["time_series_analysis"]
+            dashboard["widgets"].append({
+                "id": "time_series_trend",
+                "type": "line_chart",
+                "title": "Zaman Serisi Trendi",
+                "data": {
+                    "trend": ts_data.get("trend_analysis", {}),
+                    "seasonality": ts_data.get("seasonality_analysis", {})
+                },
+                "position": {"x": 8, "y": 5, "w": 4, "h": 4}
+            })
+        
+        return dashboard
+    
+    def _create_predictive_dashboard(self, results: Dict[str, Any],
+                                    dashboard: Dict[str, Any]) -> Dict[str, Any]:
+        """Tahmine dayalı dashboard oluştur"""
+        # Model comparison widget
+        if "model_comparison" in results:
+            comparison = results["model_comparison"]
+            dashboard["widgets"].append({
+                "id": "model_comparison",
+                "type": "bar_chart",
+                "title": "Model Karşılaştırması",
+                "data": {
+                    "models": [m["model"] for m in comparison.get("ranking", [])],
+                    "rmse": [m["rmse"] for m in comparison.get("ranking", [])],
+                    "r2": [m["r2"] for m in comparison.get("ranking", [])]
+                },
+                "position": {"x": 0, "y": 0, "w": 8, "h": 4}
+            })
+        
+        # Feature importance
+        if "feature_importance" in results:
+            importance = results["feature_importance"]
+            top_features = importance.get("top_10_features", [])
+            
+            dashboard["widgets"].append({
+                "id": "feature_importance",
+                "type": "horizontal_bar",
+                "title": "Feature Importance",
+                "data": {
+                    "features": [f["feature"] for f in top_features],
+                    "importance": [f["importance"] for f in top_features]
+                },
+                "position": {"x": 8, "y": 0, "w": 4, "h": 4}
+            })
+        
+        # Forecasts
+        if "forecasts" in results:
+            forecasts = results["forecasts"]
+            if "time_series" in forecasts:
+                ts_forecast = forecasts["time_series"]
+                
+                forecast_data = {}
+                for method, data in ts_forecast.items():
+                    if "forecast" in data:
+                        forecast_data[method] = data["forecast"]
+                
+                dashboard["widgets"].append({
+                    "id": "forecast_comparison",
+                    "type": "multi_line_chart",
+                    "title": "Tahmin Karşılaştırması",
+                    "data": forecast_data,
+                    "position": {"x": 0, "y": 4, "w": 12, "h": 4}
+                })
+        
+        return dashboard
+    
+    def _create_clustering_dashboard(self, results: Dict[str, Any],
+                                    dashboard: Dict[str, Any]) -> Dict[str, Any]:
+        """Kümeleme dashboard'ı oluştur"""
+        # Cluster profiles
+        if "cluster_profiles" in results:
+            clusters = results["cluster_profiles"]
+            
+            # Cluster sizes pie chart
+            cluster_sizes = []
+            for cluster_id, profile in clusters.items():
+                cluster_sizes.append({
+                    "cluster": cluster_id,
+                    "size": profile["size"],
+                    "percentage": profile["percentage"]
+                })
+            
+            dashboard["widgets"].append({
+                "id": "cluster_sizes",
+                "type": "pie_chart",
+                "title": "Küme Dağılımı",
+                "data": cluster_sizes,
+                "position": {"x": 0, "y": 0, "w": 4, "h": 4}
+            })
+        
+        # Cluster visualization
+        if "visualization_data" in results:
+            viz_data = results["visualization_data"]
+            
+            if "pca_components" in viz_data:
+                scatter_data = []
+                pca_points = viz_data["pca_components"]
+                labels = viz_data["cluster_labels"]
+                
+                for i, (point, label) in enumerate(zip(pca_points, labels)):
+                    scatter_data.append({
+                        "x": point[0],
+                        "y": point[1],
+                        "cluster": f"Cluster {label}",
+                        "index": i
+                    })
+                
+                dashboard["widgets"].append({
+                    "id": "cluster_scatter",
+                    "type": "scatter_plot",
+                    "title": "Küme Görselleştirmesi (PCA)",
+                    "data": scatter_data,
+                    "position": {"x": 4, "y": 0, "w": 8, "h": 4}
+                })
+        
+        return dashboard
+
+# Kullanım örneği
+if __name__ == "__main__":
+    # Analitik motoru başlat
+    analytics = MucoAdvancedAnalytics(
+        use_dask=True,
+        use_modin=False,
+        n_workers=2,
+        memory_limit="2GB"
+    )
+    
+    # Örnek veri oluştur
+    np.random.seed(42)
+    n_samples = 10000
+    
+    dates = pd.date_range('2023-01-01', periods=n_samples, freq='H')
+    data = pd.DataFrame({
+        'timestamp': dates,
+        'feature1': np.random.randn(n_samples) * 10 + 100,
+        'feature2': np.random.randn(n_samples) * 5 + 50,
+        'feature3': np.random.randn(n_samples) * 2 + 20,
+        'target': np.random.randn(n_samples) * 15 + 75,
+        'category': np.random.choice(['A', 'B', 'C', 'D'], n_samples)
+    })
+    
+    # Trend ve seasonality ekle
+    data['feature1'] += np.sin(np.arange(n_samples) * 2 * np.pi / 24) * 5  # Günlük seasonality
+    data['feature2'] += np.arange(n_samples) * 0.001  # Trend
+    data['target'] = data['feature1'] * 0.7 + data['feature2'] * 0.3 + np.random.randn(n_samples) * 5
+    
+    # Dask DataFrame'e çevir
+    dask_df = dd.from_pandas(data, npartitions=4)
+    
+    # Analiz konfigürasyonu
+    config = AnalysisConfig(
+        analysis_type=AnalysisType.DESCRIPTIVE,
+        data_source="sample",
+        target_column="target",
+        feature_columns=['feature1', 'feature2', 'feature3'],
+        time_column="timestamp",
+        group_column="category",
+        sample_size=1000,
+        confidence_level=0.95
+    )
+    
+    # Tanımlayıcı analitik
+    print("Tanımlayıcı analitik başlatılıyor...")
+    descriptive_results = analytics.perform_descriptive_analytics(dask_df, config)
+    print(f"Tanımlayıcı analitik tamamlandı: {len(descriptive_results)} metrik")
+    
+    # Tahmine dayalı analitik
+    print("\nTahmine dayalı analitik başlatılıyor...")
+    predictive_results = analytics.perform_predictive_analytics(dask_df, config)
+    print(f"Tahmine dayalı analitik tamamlandı: {len(predictive_results.get('models', {}))} model")
+    
+    # Kümeleme analizi
+    print("\nKümeleme analizi başlatılıyor...")
+    numeric_cols = ['feature1', 'feature2', 'feature3', 'target']
+    clustering_results = analytics.perform_cluster_analysis(dask_df, numeric_cols, n_clusters=4)
+    print(f"Kümeleme analizi tamamlandı: {len(clustering_results.get('cluster_profiles', {}))} küme")
+    
+    # Dashboard oluştur
+    print("\nDashboard oluşturuluyor...")
+    descriptive_dashboard = analytics.create_interactive_dashboard(
+        descriptive_results, 
+        dashboard_type="descriptive"
+    )
+    
+    predictive_dashboard = analytics.create_interactive_dashboard(
+        predictive_results,
+        dashboard_type="predictive"
+    )
+    
+    clustering_dashboard = analytics.create_interactive_dashboard(
+        clustering_results,
+        dashboard_type="clustering"
+    )
+    
+    print(f"Dashboard'lar oluşturuldu: {len(descriptive_dashboard['widgets'])} widget")
+    
+    # Sonuçları kaydet
+    import json
+    
+    with open('descriptive_analytics.json', 'w') as f:
+        json.dump(descriptive_results, f, indent=2, default=str)
+    
+    with open('predictive_analytics.json', 'w') as f:
+        json.dump(predictive_results, f, indent=2, default=str)
+    
+    with open('clustering_analytics.json', 'w') as f:
+        json.dump(clustering_results, f, indent=2, default=str)
+    
+    print("\nAnalizler başarıyla tamamlandı ve kaydedildi!")
+3. Real-time Stream Processing (Apache Kafka/Spark Streaming)
+python
+# muco_stream_processing.py
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from pyspark.streaming import StreamingContext
+from pyspark.streaming.kafka import KafkaUtils
+import json
+import numpy as np
+from datetime import datetime, timedelta
+import logging
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
+from enum import Enum
+
+# Logging configuration
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class StreamSource(Enum):
+    """Stream veri kaynağı türleri"""
+    KAFKA = "kafka"
+    SOCKET = "socket"
+    FILE = "file"
+    CUSTOM = "custom"
+
+class ProcessingType(Enum):
+    """İşleme türleri"""
+    REAL_TIME = "real_time"
+    NEAR_REAL_TIME = "near_real_time"
+    MICRO_BATCH = "micro_batch"
+
+@dataclass
+class StreamConfig:
+    """Stream işleme konfigürasyonu"""
+    source_type: StreamSource
+    source_address: str
+    processing_type: ProcessingType
+    batch_interval: int = 1  # saniye
+    checkpoint_dir: str = "checkpoints"
+    window_duration: int = 60  # saniye
+    slide_duration: int = 10  # saniye
+
+class MucoStreamProcessor:
+    """MUCO Real-time Stream Processing"""
+    
+    def __init__(self, app_name: str = "MUCO-Stream-Processor",
+                 master: str = "local[*]",
+                 config: Dict[str, str] = None):
+        """
+        Stream processing başlatma
+        
+        Args:
+            app_name: Uygulama adı
+            master: Spark master
+            config: Ek konfigürasyonlar
+        """
+        self.app_name = app_name
+        self.master = master
+        self.config = config or {}
+        
+        # SparkSession ve StreamingContext oluştur
+        self.spark = self._create_spark_session()
+        self.ssc = None
+        self.streaming_queries = []
+        
+    def _create_spark_session(self) -> SparkSession:
+        """SparkSession oluşturma"""
+        try:
+            builder = SparkSession.builder \
+                .appName(self.app_name) \
+                .master(self.master) \
+                .config("spark.sql.streaming.checkpointLocation", "/tmp/checkpoints") \
+                .config("spark.sql.streaming.schemaInference", "true") \
+                .config("spark.sql.shuffle.partitions", "10") \
+                .config("spark.default.parallelism", "10") \
+                .config("spark.streaming.backpressure.enabled", "true") \
+                .config("spark.streaming.kafka.maxRatePerPartition", "1000")
+            
+            # Ek konfigürasyonlar
+            for key, value in self.config.items():
+                builder = builder.config(key, value)
+            
+            spark = builder.getOrCreate()
+            spark.sparkContext.setLogLevel("WARN")
+            
+            logger.info("SparkSession created for stream processing")
+            return spark
+            
+        except Exception as e:
+            logger.error(f"SparkSession creation failed: {str(e)}")
+            raise
+    
+    def create_streaming_context(self, batch_interval: int = 1) -> StreamingContext:
+        """StreamingContext oluşturma"""
+        try:
+            self.ssc = StreamingContext(self.spark.sparkContext, batch_interval)
+            self.ssc.checkpoint(self.config.get("checkpoint_dir", "/tmp/checkpoints"))
+            
+            logger.info(f"StreamingContext created with {batch_interval}s batch interval")
+            return self.ssc
+            
+        except Exception as e:
+            logger.error(f"StreamingContext creation failed: {str(e)}")
+            raise
+    
+    def create_kafka_stream(self, brokers: str, topics: List[str],
+                           group_id: str = "muco-group") -> "DStream":
+        """
+        Kafka stream oluşturma
+        
+        Args:
+            brokers: Kafka broker'ları
+            topics: Kafka topic'leri
+            group_id: Consumer group ID
+            
+        Returns:
+            Kafka DStream
+        """
+        try:
+            if not self.ssc:
+                self.create_streaming_context()
+            
+            # Kafka parametreleri
+            kafka_params = {
+                "bootstrap.servers": brokers,
+                "group.id": group_id,
+                "auto.offset.reset": "latest"
+            }
+            
+            # Kafka stream oluştur
+            stream = KafkaUtils.createDirectStream(
+                self.ssc,
+                topics,
+                kafka_params
+            )
+            
+            logger.info(f"Kafka stream created for topics: {topics}")
+            return stream
+            
+        except Exception as e:
+            logger.error(f"Kafka stream creation failed: {str(e)}")
+            raise
+    
+    def create_socket_stream(self, hostname: str, port: int) -> "DStream":
+        """
+        Socket stream oluşturma
+        
+        Args:
+            hostname: Host adresi
+            port: Port numarası
+            
+        Returns:
+            Socket DStream
+        """
+        try:
+            if not self.ssc:
+                self.create_streaming_context()
+            
+            stream = self.ssc.socketTextStream(hostname, port)
+            
+            logger.info(f"Socket stream created for {hostname}:{port}")
+            return stream
+            
+        except Exception as e:
+            logger.error(f"Socket stream creation failed: {str(e)}")
+            raise
+    
+    def create_file_stream(self, directory: str, 
+                          file_format: str = "text") -> "DStream":
+        """
+        File stream oluşturma
+        
+        Args:
+            directory: Dosya dizini
+            file_format: Dosya formatı
+            
+        Returns:
+            File DStream
+        """
+        try:
+            if not self.ssc:
+                self.create_streaming_context()
+            
+            stream = self.ssc.textFileStream(directory)
+            
+            logger.info(f"File stream created for directory: {directory}")
+            return stream
+            
+        except Exception as e:
+            logger.error(f"File stream creation failed: {str(e)}")
+            raise
+    
+    def process_financial_stream(self, stream: "DStream",
+                                schema: StructType = None) -> "DStream":
+        """
+        Finansal veri stream işleme
+        
+        Args:
+            stream: Input DStream
+            schema: Veri şeması
+            
+        Returns:
+            İşlenmiş DStream
+        """
+        try:
+            # Varsayılan şema
+            if not schema:
+                schema = StructType([
+                    StructField("symbol", StringType(), True),
+                    StructField("timestamp", TimestampType(), True),
+                    StructField("price", DoubleType(), True),
+                    StructField("volume", LongType(), True),
+                    StructField("bid", DoubleType(), True),
+                    StructField("ask", DoubleType(), True),
+                    StructField("exchange", StringType(), True)
+                ])
+            
+            # JSON parsing
+            def parse_json(rdd):
+                try:
+                    data = json.loads(rdd)
+                    return data
+                except:
+                    return None
+            
+            # Stream'i parse et
+            parsed_stream = stream.map(parse_json).filter(lambda x: x is not None)
+            
+            # DataFrame'e çevir
+            def process_batch(time, rdd):
+                if not rdd.isEmpty():
+                    # RDD'den DataFrame oluştur
+                    df = self.spark.createDataFrame(rdd, schema=schema)
+                    
+                    # Real-time analizler
+                    df = self._apply_real_time_analytics(df)
+                    
+                    # Sonuçları göster/kaydet
+                    df.show(10, truncate=False)
+                    
+                    # Aggregation'ları hesapla
+                    self._calculate_real_time_aggregations(df)
+                    
+                    # Anomaly detection
+                    self._detect_real_time_anomalies(df)
+            
+            # Batch işleme
+            parsed_stream.foreachRDD(process_batch)
+            
+            logger.info("Financial stream processing configured")
+            return parsed_stream
+            
+        except Exception as e:
+            logger.error(f"Financial stream processing failed: {str(e)}")
+            raise
+    
+    def _apply_real_time_analytics(self, df: "DataFrame") -> "DataFrame":
+        """Real-time analitik uygula"""
+        # Window fonksiyonları
+        window_spec = Window.partitionBy("symbol").orderBy("timestamp")
+        
+        # Real-time göstergeler
+        processed_df = df.withColumn("prev_price", lag("price", 1).over(window_spec)) \
+                        .withColumn("price_change", 
+                                   when(col("prev_price").isNotNull(),
+                                       col("price") - col("prev_price")
+                                   ).otherwise(0)) \
+                        .withColumn("price_change_pct",
+                                   when(col("prev_price").isNotNull() & (col("prev_price") != 0),
+                                       (col("price") - col("prev_price")) / col("prev_price") * 100
+                                   ).otherwise(0)) \
+                        .withColumn("rolling_avg_10", 
+                                   avg("price").over(window_spec.rowsBetween(-9, 0))) \
+                        .withColumn("rolling_std_10",
+                                   stddev("price").over(window_spec.rowsBetween(-9, 0))) \
+                        .withColumn("volume_avg_10",
+                                   avg("volume").over(window_spec.rowsBetween(-9, 0))) \
+                        .withColumn("bid_ask_spread", col("ask") - col("bid"))
+        
+        # VWAP (Volume Weighted Average Price)
+        processed_df = processed_df.withColumn("price_volume", col("price") * col("volume")) \
+                                  .withColumn("cumulative_price_volume",
+                                             sum("price_volume").over(window_spec)) \
+                                  .withColumn("cumulative_volume",
+                                             sum("volume").over(window_spec)) \
+                                  .withColumn("vwap",
+                                             when(col("cumulative_volume") != 0,
+                                                  col("cumulative_price_volume") / col("cumulative_volume")
+                                             ).otherwise(col("price")))
+        
+        # Real-time RSI (basitleştirilmiş)
+        processed_df = processed_df.withColumn("gain",
+                                              when(col("price_change") > 0, col("price_change")).otherwise(0)) \
+                                  .withColumn("loss",
+                                              when(col("price_change") < 0, -col("price_change")).otherwise(0))
+        
+        # EMA hesaplama (basitleştirilmiş)
+        alpha = 1/14
+        processed_df = processed_df.withColumn("avg_gain_ema",
+                                              sum(col("gain") * pow(1 - alpha, 14)).over(window_spec)) \
+                                  .withColumn("avg_loss_ema",
+                                              sum(col("loss") * pow(1 - alpha, 14)).over(window_spec)) \
+                                  .withColumn("rs",
+                                              when(col("avg_loss_ema") > 0,
+                                                   col("avg_gain_ema") / col("avg_loss_ema")).otherwise(100)) \
+                                  .withColumn("rsi",
+                                              100 - (100 / (1 + col("rs"))))
+        
+        return processed_df
+    
+    def _calculate_real_time_aggregations(self, df: "DataFrame"):
+        """Real-time aggregation'ları hesapla"""
+        try:
+            # Sembol bazlı aggregation'lar
+            symbol_agg = df.groupBy("symbol").agg(
+                count("*").alias("message_count"),
+                avg("price").alias("avg_price"),
+                stddev("price").alias("std_price"),
+                min("price").alias("min_price"),
+                max("price").alias("max_price"),
+                sum("volume").alias("total_volume"),
+                avg("bid_ask_spread").alias("avg_spread")
+            )
+            
+            # Exchange bazlı aggregation'lar
+            exchange_agg = df.groupBy("exchange").agg(
+                count("*").alias("message_count"),
+                countDistinct("symbol").alias("unique_symbols"),
+                avg("price").alias("avg_price"),
+                sum("volume").alias("total_volume")
+            )
+            
+            # Real-time dashboard için kaydet
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            symbol_agg.write \
+                .mode("append") \
+                .format("parquet") \
+                .save(f"/tmp/stream_aggregations/symbol_{timestamp}")
+            
+            exchange_agg.write \
+                .mode("append") \
+                .format("parquet") \
+                .save(f"/tmp/stream_aggregations/exchange_{timestamp}")
+            
+            logger.debug(f"Real-time aggregations saved: {timestamp}")
+            
+        except Exception as e:
+            logger.error(f"Real-time aggregation calculation failed: {str(e)}")
+    
+    def _detect_real_time_anomalies(self, df: "DataFrame"):
+        """Real-time anomali tespiti"""
+        try:
+            # Price spike detection
+            spike_threshold = 3  # 3 standart sapma
+            
+            price_stats = df.agg(
+                avg("price").alias("avg_price"),
+                stddev("price").alias("std_price")
+            ).collect()[0]
+            
+            avg_price = price_stats["avg_price"]
+            std_price = price_stats["std_price"]
+            
+            if std_price and std_price > 0:
+                anomalies = df.filter(
+                    abs(col("price") - avg_price) > spike_threshold * std_price
+                )
+                
+                if anomalies.count() > 0:
+                    logger.warning(f"Price spikes detected: {anomalies.count()} anomalies")
+                    
+                    # Anomalileri kaydet
+                    anomalies.select("symbol", "timestamp", "price", 
+                                   "price_change_pct").write \
+                        .mode("append") \
+                        .format("json") \
+                        .save("/tmp/stream_anomalies/price_spikes")
+            
+            # Volume anomaly detection
+            volume_anomalies = df.filter(
+                col("volume") > col("volume_avg_10") * 5
+            )
+            
+            if volume_anomalies.count() > 0:
+                logger.warning(f"Volume anomalies detected: {volume_anomalies.count()} anomalies")
+                
+                volume_anomalies.select("symbol", "timestamp", "volume", 
+                                      "volume_avg_10").write \
+                    .mode("append") \
+                    .format("json") \
+                    .save("/tmp/stream_anomalies/volume_anomalies")
+            
+            # Spread anomaly detection
+            spread_anomalies = df.filter(
+                col("bid_ask_spread") > col("price") * 0.05  %5%'den fazla spread
+            )
+            
+            if spread_anomalies.count() > 0:
+                logger.warning(f"Spread anomalies detected: {spread_anomalies.count()} anomalies")
+                
+                spread_anomalies.select("symbol", "timestamp", "bid", "ask", 
+                                      "bid_ask_spread").write \
+                    .mode("append") \
+                    .format("json") \
+                    .save("/tmp/stream_anomalies/spread_anomalies")
+                
+        except Exception as e:
+            logger.error(f"Real-time anomaly detection failed: {str(e)}")
+    
+    def process_sentiment_stream(self, stream: "DStream",
+                                language: str = "en") -> "DStream":
+        """
+        Sentiment analizi stream işleme
+        
+        Args:
+            stream: Input DStream
+            language: Dil
+            
+        Returns:
+            İşlenmiş DStream
+        """
+        try:
+            # Sentiment analizi için şema
+            schema = StructType([
+                StructField("id", StringType(), True),
+                StructField("timestamp", TimestampType(), True),
+                StructField("text", StringType(), True),
+                StructField("source", StringType(), True),
+                StructField("author", StringType(), True),
+                StructField("url", StringType(), True)
+            ])
+            
+            # JSON parsing
+            def parse_sentiment_json(rdd):
+                try:
+                    data = json.loads(rdd)
+                    return data
+                except:
+                    return None
+            
+            parsed_stream = stream.map(parse_sentiment_json).filter(lambda x: x is not None)
+            
+            # Batch processing
+            def process_sentiment_batch(time, rdd):
+                if not rdd.isEmpty():
+                    df = self.spark.createDataFrame(rdd, schema=schema)
+                    
+                    # Sentiment analizi uygula
+                    df = self._apply_sentiment_analysis(df, language)
+                    
+                    # Sonuçları göster
+                    df.select("timestamp", "text", "sentiment_score", 
+                            "sentiment_label").show(10, truncate=False)
+                    
+                    # Real-time sentiment aggregation
+                    self._calculate_sentiment_aggregations(df)
+                    
+                    # Trend detection
+                    self._detect_sentiment_trends(df)
+            
+            parsed_stream.foreachRDD(process_sentiment_batch)
+            
+            logger.info("Sentiment stream processing configured")
+            return parsed_stream
+            
+        except Exception as e:
+            logger.error(f"Sentiment stream processing failed: {str(e)}")
+            raise
+    
+    def _apply_sentiment_analysis(self, df: "DataFrame", 
+                                 language: str = "en") -> "DataFrame":
+        """Sentiment analizi uygula"""
+        # Basit sentiment analizi UDF
+        @udf(returnType=DoubleType())
+        def simple_sentiment_udf(text):
+            if not text:
+                return 0.0
+            
+            # Pozitif ve negatif kelime listeleri
+            positive_words = {
+                'en': ['good', 'great', 'excellent', 'amazing', 'love', 'best', 
+                      'positive', 'happy', 'win', 'profit', 'success'],
+                'tr': ['iyi', 'harika', 'mükemmel', 'muhteşem', 'sev', 'en iyi',
+                      'olumlu', 'mutlu', 'kazanç', 'başarı']
+            }
+            
+            negative_words = {
+                'en': ['bad', 'terrible', 'awful', 'hate', 'worst', 'negative',
+                      'sad', 'lose', 'loss', 'failure', 'problem'],
+                'tr': ['kötü', 'berbat', 'korkunç', 'nefret', 'en kötü', 'olumsuz',
+                      'üzgün', 'kayıp', 'başarısızlık', 'sorun']
+            }
+            
+            text_lower = text.lower()
+            pos_count = sum(1 for word in positive_words.get(language, positive_words['en']) 
+                          if word in text_lower)
+            neg_count = sum(1 for word in negative_words.get(language, negative_words['en']) 
+                          if word in text_lower)
+            
+            total = pos_count + neg_count
+            if total == 0:
+                return 0.0
+            
+            sentiment = (pos_count - neg_count) / total
+            return float(sentiment)
+        
+        @udf(returnType=StringType())
+        def sentiment_label_udf(score):
+            if score > 0.2:
+                return "positive"
+            elif score < -0.2:
+                return "negative"
+            else:
+                return "neutral"
+        
+        # Sentiment skoru ve etiketi ekle
+        processed_df = df.withColumn("sentiment_score", simple_sentiment_udf(col("text"))) \
+                        .withColumn("sentiment_label", sentiment_label_udf(col("sentiment_score")))
+        
+        # Metin özellikleri
+        @udf(returnType=IntegerType())
+        def word_count_udf(text):
+            return len(text.split()) if text else 0
+        
+        processed_df = processed_df.withColumn("word_count", word_count_udf(col("text"))) \
+                                  .withColumn("contains_url", 
+                                             when(col("text").contains("http"), 1).otherwise(0)) \
+                                  .withColumn("contains_hashtag",
+                                             when(col("text").contains("#"), 1).otherwise(0)) \
+                                  .withColumn("contains_mention",
+                                             when(col("text").contains("@"), 1).otherwise(0))
+        
+        return processed_df
+    
+    def _calculate_sentiment_aggregations(self, df: "DataFrame"):
+        """Sentiment aggregation'larını hesapla"""
+        try:
+            # Kaynak bazlı sentiment
+            source_sentiment = df.groupBy("source").agg(
+                count("*").alias("message_count"),
+                avg("sentiment_score").alias("avg_sentiment"),
+                count(when(col("sentiment_label") == "positive", True)).alias("positive_count"),
+                count(when(col("sentiment_label") == "negative", True)).alias("negative_count"),
+                count(when(col("sentiment_label") == "neutral", True)).alias("neutral_count")
+            ).withColumn("positive_ratio", col("positive_count") / col("message_count")) \
+             .withColumn("negative_ratio", col("negative_count") / col("message_count"))
+            
+            # Zaman bazlı sentiment
+            df_with_hour = df.withColumn("hour", hour(col("timestamp")))
+            hourly_sentiment = df_with_hour.groupBy("hour").agg(
+                count("*").alias("message_count"),
+                avg("sentiment_score").alias("avg_sentiment"),
+                stddev("sentiment_score").alias("sentiment_volatility")
+            ).orderBy("hour")
+            
+            # Real-time dashboard için kaydet
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            source_sentiment.write \
+                .mode("append") \
+                .format("parquet") \
+                .save(f"/tmp/sentiment_aggregations/source_{timestamp}")
+            
+            hourly_sentiment.write \
+                .mode("append") \
+                .format("parquet") \
+                .save(f"/tmp/sentiment_aggregations/hourly_{timestamp}")
+            
+            logger.debug(f"Sentiment aggregations saved: {timestamp}")
+            
+        except Exception as e:
+            logger.error(f"Sentiment aggregation calculation failed: {str(e)}")
+    
+    def _detect_sentiment_trends(self, df: "DataFrame"):
+        """Sentiment trend'lerini tespit et"""
+        try:
+            # Trend analizi için window
+            window_spec = Window.orderBy("timestamp").rowsBetween(-9, 0)
+            
+            df_with_trend = df.withColumn("sentiment_trend", 
+                                         avg("sentiment_score").over(window_spec))
+            
+            # Ani sentiment değişimi
+            sentiment_change = df_with_trend.withColumn("prev_sentiment", 
+                                                       lag("sentiment_trend", 1).over(Window.orderBy("timestamp"))) \
+                                          .withColumn("sentiment_change", 
+                                                     when(col("prev_sentiment").isNotNull(),
+                                                         col("sentiment_trend") - col("prev_sentiment")
+                                                     ).otherwise(0))
+            
+            # Büyük sentiment değişimlerini tespit et
+            big_changes = sentiment_change.filter(
+                abs(col("sentiment_change")) > 0.3
+            )
+            
+            if big_changes.count() > 0:
+                logger.warning(f"Significant sentiment changes detected: {big_changes.count()} events")
+                
+                big_changes.select("timestamp", "sentiment_trend", 
+                                 "sentiment_change", "text").write \
+                    .mode("append") \
+                    .format("json") \
+                    .save("/tmp/sentiment_trends/big_changes")
+            
+            # Sentiment volatility
+            sentiment_volatility = df.agg(
+                stddev("sentiment_score").alias("volatility")
+            ).collect()[0]["volatility"]
+            
+            if sentiment_volatility and sentiment_volatility > 0.5:
+                logger.warning(f"High sentiment volatility detected: {sentiment_volatility}")
+                
+        except Exception as e:
+            logger.error(f"Sentiment trend detection failed: {str(e)}")
+    
+    def create_windowed_aggregations(self, stream: "DStream",
+                                    window_duration: int = 60,
+                                    slide_duration: int = 10) -> "DStream":
+        """
+        Windowed aggregation'lar oluştur
+        
+        Args:
+            stream: Input DStream
+            window_duration: Window süresi (saniye)
+            slide_duration: Slide süresi (saniye)
+            
+        Returns:
+            Windowed DStream
+        """
+        try:
+            # Tumbling window (her 60 saniyede bir)
+            tumbling_window = stream.window(window_duration, window_duration)
+            
+            # Sliding window (her 10 saniyede bir 60 saniyelik window)
+            sliding_window = stream.window(window_duration, slide_duration)
+            
+            # Windowed aggregation fonksiyonu
+            def aggregate_window(rdd):
+                if not rdd.isEmpty():
+                    # RDD'yi işle
+                    # Bu kısım uygulama ihtiyacına göre özelleştirilmeli
+                    aggregated_data = rdd.map(lambda x: (x.get("symbol", "unknown"), 1)) \
+                                        .reduceByKey(lambda a, b: a + b)
+                    return aggregated_data.collect()
+                return []
+            
+            # Tumbling window aggregation
+            tumbling_aggregated = tumbling_window.transform(aggregate_window)
+            
+            # Sliding window aggregation
+            sliding_aggregated = sliding_window.transform(aggregate_window)
+            
+            # Sonuçları işle
+            def process_aggregations(time, rdd):
+                results = rdd.collect()
+                if results:
+                    logger.info(f"Windowed aggregations at {time}: {results}")
+                    
+                    # Dashboard veya alert sistemine gönder
+                    self._send_to_dashboard(results, time)
+            
+            tumbling_aggregated.foreachRDD(process_aggregations)
+            sliding_aggregated.foreachRDD(process_aggregations)
+            
+            logger.info(f"Windowed aggregations configured: {window_duration}s window, {slide_duration}s slide")
+            return sliding_aggregated
+            
+        except Exception as e:
+            logger.error(f"Windowed aggregation creation failed: {str(e)}")
+            raise
+    
+    def _send_to_dashboard(self, data: List, timestamp: Any):
+        """Dashboard'a veri gönder"""
+        try:
+            # Dashboard veri formatı
+            dashboard_data = {
+                "timestamp": str(timestamp),
+                "data": data,
+                "type": "windowed_aggregation"
+            }
+            
+            # Gerçek uygulamada bu veri bir dashboard servisine gönderilir
+            # Örnek: Kafka topic'e publish et
+            # kafka_producer.send('dashboard-topic', dashboard_data)
+            
+            logger.debug(f"Dashboard data prepared: {len(data)} items")
+            
+        except Exception as e:
+            logger.error(f"Dashboard data sending failed: {str(e)}")
+    
+    def create_alert_system(self, stream: "DStream",
+                           alert_rules: Dict[str, Any]) -> "DStream":
+        """
+        Real-time alert sistemi oluştur
+        
+        Args:
+            stream: Input DStream
+            alert_rules: Alert kuralları
+            
+        Returns:
+            Alert DStream
+        """
+        try:
+            # Alert kontrol fonksiyonu
+            def check_alerts(rdd):
+                alerts = []
+                
+                for record in rdd.collect():
+                    # Her bir kayıt için alert kurallarını kontrol et
+                    for rule_name, rule in alert_rules.items():
+                        if self._evaluate_alert_rule(record, rule):
+                            alert = {
+                                "timestamp": datetime.now().isoformat(),
+                                "rule_name": rule_name,
+                                "record": record,
+                                "severity": rule.get("severity", "medium"),
+                                "message": rule.get("message", "Alert triggered")
+                            }
+                            alerts.append(alert)
+                
+                return alerts
+            
+            # Alert DStream oluştur
+            alert_stream = stream.transform(check_alerts)
+            
+            # Alert'leri işle
+            def process_alerts(time, rdd):
+                alerts = rdd.collect()
+                if alerts:
+                    logger.warning(f"Alerts triggered at {time}: {len(alerts)} alerts")
+                    
+                    # Alert'leri kaydet
+                    for alert in alerts:
+                        self._handle_alert(alert)
+                    
+                    # Dashboard'a gönder
+                    self._send_alerts_to_dashboard(alerts)
+            
+            alert_stream.foreachRDD(process_alerts)
+            
+            logger.info(f"Alert system configured with {len(alert_rules)} rules")
+            return alert_stream
+            
+        except Exception as e:
+            logger.error(f"Alert system creation failed: {str(e)}")
+            raise
+    
+    def _evaluate_alert_rule(self, record: Dict, rule: Dict) -> bool:
+        """Alert kuralını değerlendir"""
+        try:
+            condition = rule.get("condition", {})
+            field = condition.get("field")
+            operator = condition.get("operator")
+            value = condition.get("value")
+            
+            if not field or field not in record:
+                return False
+            
+            field_value = record[field]
+            
+            # Operatöre göre değerlendirme
+            if operator == "gt":
+                return field_value > value
+            elif operator == "lt":
+                return field_value < value
+            elif operator == "eq":
+                return field_value == value
+            elif operator == "neq":
+                return field_value != value
+            elif operator == "gte":
+                return field_value >= value
+            elif operator == "lte":
+                return field_value <= value
+            elif operator == "contains":
+                return value in str(field_value)
+            elif operator == "not_contains":
+                return value not in str(field_value)
+            else:
+                return False
+                
+        except Exception as e:
+            logger.error(f"Alert rule evaluation failed: {str(e)}")
+            return False
+    
+    def _handle_alert(self, alert: Dict):
+        """Alert'i işle"""
+        try:
+            # Alert'i logla
+            logger.warning(f"ALERT: {alert['rule_name']} - {alert['message']}")
+            
+            # Alert'i dosyaya kaydet
+            alert_file = f"/tmp/alerts/{alert['rule_name']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            
+            with open(alert_file, 'w') as f:
+                json.dump(alert, f, indent=2, default=str)
+            
+            # E-posta veya mesajlaşma servisine gönder (gerçek uygulamada)
+            # self._send_email_alert(alert)
+            # self._send_slack_alert(alert)
+            
+            logger.debug(f"Alert handled: {alert['rule_name']}")
+            
+        except Exception as e:
+            logger.error(f"Alert handling failed: {str(e)}")
+    
+    def _send_alerts_to_dashboard(self, alerts: List[Dict]):
+        """Alert'leri dashboard'a gönder"""
+        try:
+            dashboard_alerts = {
+                "timestamp": datetime.now().isoformat(),
+                "alert_count": len(alerts),
+                "alerts": alerts[:10],  # İlk 10 alert
+                "high_priority_alerts": len([a for a in alerts if a.get("severity") == "high"])
+            }
+            
+            # Gerçek uygulamada dashboard servisine gönder
+            logger.debug(f"Dashboard alerts prepared: {len(alerts)} alerts")
+            
+        except Exception as e:
+            logger.error(f"Dashboard alert sending failed: {str(e)}")
+    
+    def start_streaming(self):
+        """Streaming'i başlat"""
+        try:
+            if not self.ssc:
+                raise ValueError("StreamingContext not created")
+            
+            logger.info("Starting streaming...")
+            self.ssc.start()
+            
+            # Sonsuz döngü (Ctrl+C ile durdurulabilir)
+            self.ssc.awaitTermination()
+            
+        except KeyboardInterrupt:
+            logger.info("Streaming stopped by user")
+            self.stop_streaming()
+        except Exception as e:
+            logger.error(f"Streaming start failed: {str(e)}")
+            raise
+    
+    def stop_streaming(self):
+        """Streaming'i durdur"""
+        try:
+            if self.ssc:
+                logger.info("Stopping streaming...")
+                self.ssc.stop(stopSparkContext=False, stopGraceFully=True)
+                
+                # Streaming query'leri durdur
+                for query in self.streaming_queries:
+                    query.stop()
+                
+                logger.info("Streaming stopped successfully")
+                
+        except Exception as e:
+            logger.error(f"Streaming stop failed: {str(e)}")
+
+# Kullanım örneği
+if __name__ == "__main__":
+    # Stream processor oluştur
+    stream_processor = MucoStreamProcessor(
+        app_name="MUCO-Financial-Stream",
+        master="local[*]",
+        config={
+            "spark.sql.streaming.checkpointLocation": "/tmp/muco_checkpoints",
+            "spark.streaming.kafka.maxRatePerPartition": "100",
+            "spark.streaming.backpressure.initialRate": "50"
+        }
+    )
+    
+    # Örnek veri üretici (simülasyon)
+    def generate_mock_financial_data():
+        """Mock finansal veri üret"""
+        import random
+        import time
+        
+        symbols = ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "FB", "NFLX", "NVDA"]
+        
+        while True:
+            symbol = random.choice(symbols)
+            price = round(random.uniform(100, 500), 2)
+            volume = random.randint(1000, 10000)
+            bid = round(price * random.uniform(0.99, 0.999), 2)
+            ask = round(price * random.uniform(1.001, 1.01), 2)
+            
+            data = {
+                "symbol": symbol,
+                "timestamp": datetime.now().isoformat(),
+                "price": price,
+                "volume": volume,
+                "bid": bid,
+                "ask": ask,
+                "exchange": "NASDAQ"
+            }
+            
+            yield json.dumps(data)
+            time.sleep(random.uniform(0.1, 0.5))  # 100-500ms arası
+    
+    # Socket stream ile çalışma örneği
+    import socket
+    import threading
+    
+    def start_mock_server():
+        """Mock veri server'ı başlat"""
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(('localhost', 9999))
+        server.listen(1)
+        
+        print("Mock server started on port 9999")
+        
+        while True:
+            conn, addr = server.accept()
+            print(f"Client connected: {addr}")
+            
+            data_generator = generate_mock_financial_data()
+            try:
+                for data in data_generator:
+                    conn.send((data + "\n").encode())
+            except:
+                conn.close()
+    
+    # Mock server'ı thread'te başlat
+    server_thread = threading.Thread(target=start_mock_server, daemon=True)
+    server_thread.start()
+    
+    # Stream işlemeyi başlat
+    try:
+        # Socket stream oluştur
+        socket_stream = stream_processor.create_socket_stream("localhost", 9999)
+        
+        # Finansal stream işleme
+        processed_stream = stream_processor.process_financial_stream(socket_stream)
+        
+        # Windowed aggregation'lar oluştur
+        windowed_stream = stream_processor.create_windowed_aggregations(
+            processed_stream,
+            window_duration=30,
+            slide_duration=10
+        )
+        
+        # Alert sistemi kuralları
+        alert_rules = {
+            "price_spike": {
+                "condition": {
+                    "field": "price_change_pct",
+                    "operator": "gt",
+                    "value": 5.0
+                },
+                "severity": "high",
+                "message": "Price spike detected (>5%)"
+            },
+            "high_volume": {
+                "condition": {
+                    "field": "volume",
+                    "operator": "gt",
+                    "value": 50000
+                },
+                "severity": "medium",
+                "message": "High volume detected (>50,000)"
+            },
+            "wide_spread": {
+                "condition": {
+                    "field": "bid_ask_spread",
+                    "operator": "gt",
+                    "value": 2.0
+                },
+                "severity": "low",
+                "message": "Wide bid-ask spread detected (>$2)"
+            }
+        }
+        
+        # Alert sistemi oluştur
+        alert_stream = stream_processor.create_alert_system(processed_stream, alert_rules)
+        
+        # Streaming'i başlat
+        print("Starting stream processing... Press Ctrl+C to stop.")
+        stream_processor.start_streaming()
+        
+    except KeyboardInterrupt:
+        print("\nStream processing stopped by user")
+    except Exception as e:
+        print(f"Stream processing failed: {str(e)}")
+    finally:
+        # Temizlik
+        stream_processor.stop_streaming()
+4. Data Lake ve Data Warehouse Entegrasyonu
+python
+# muco_data_lakehouse.py
+from dataclasses import dataclass
+from enum import Enum
+from typing import Dict, List, Any, Optional, Union
+from datetime import datetime, timedelta
+import json
+import logging
+import os
+
+# AWS/Cloud imports
+try:
+    import boto3
+    from botocore.exceptions import ClientError
+except ImportError:
+    boto3 = None
+
+try:
+    from google.cloud import storage, bigquery
+except ImportError:
+    storage = None
+    bigquery = None
+
+try:
+    from azure.storage.blob import BlobServiceClient
+    from azure.identity import DefaultAzureCredential
+except ImportError:
+    BlobServiceClient = None
+
+# Delta Lake
+try:
+    from delta import *
+except ImportError:
+    pass
+
+logger = logging.getLogger(__name__)
+
+class StorageType(Enum):
+    """Depolama türleri"""
+    S3 = "s3"
+    GCS = "gcs"
+    AZURE_BLOB = "azure_blob"
+    HDFS = "hdfs"
+    LOCAL = "local"
+
+class DataFormat(Enum):
+    """Veri formatları"""
+    PARQUET = "parquet"
+    DELTA = "delta"
+    CSV = "csv"
+    JSON = "json"
+    AVRO = "avro"
+    ORC = "orc"
+
+@dataclass
+class DataLakeConfig:
+    """Data Lake konfigürasyonu"""
+    storage_type: StorageType
+    bucket_name: str
+    base_path: str
+    region: str = None
+    access_key: str = None
+    secret_key: str = None
+    endpoint_url: str = None
+
+@dataclass
+class DataWarehouseConfig:
+    """Data Warehouse konfigürasyonu"""
+    warehouse_type: str  # bigquery, redshift, snowflake, etc.
+    project_id: str = None
+    dataset_id: str = None
+    database: str = None
+    schema: str = None
+    warehouse: str = None
+    username: str = None
+    password: str = None
+    host: str = None
+    port: int = None
+
+class MucoDataLakehouse:
+    """MUCO Data Lakehouse Yönetimi"""
+    
+    def __init__(self, lake_config: DataLakeConfig,
+                 warehouse_config: DataWarehouseConfig = None):
+        """
+        Data Lakehouse başlatma
+        
+        Args:
+            lake_config: Data Lake konfigürasyonu
+            warehouse_config: Data Warehouse konfigürasyonu
+        """
+        self.lake_config = lake_config
+        self.warehouse_config = warehouse_config
+        
+        # Storage client'larını başlat
+        self.storage_client = self._initialize_storage_client()
+        self.warehouse_client = self._initialize_warehouse_client() if warehouse_config else None
+        
+        # Metadata store
+        self.metadata_store = {}
+        
+    def _initialize_storage_client(self):
+        """Storage client başlatma"""
+        try:
+            if self.lake_config.storage_type == StorageType.S3:
+                if not boto3:
+                    raise ImportError("boto3 required for S3 storage")
+                
+                session = boto3.Session(
+                    aws_access_key_id=self.lake_config.access_key,
+                    aws_secret_access_key=self.lake_config.secret_key,
+                    region_name=self.lake_config.region
+                )
+                
+                client = session.client('s3', endpoint_url=self.lake_config.endpoint_url)
+                return client
+                
+            elif self.lake_config.storage_type == StorageType.GCS:
+                if not storage:
+                    raise ImportError("google-cloud-storage required for GCS")
+                
+                client = storage.Client()
+                return client
+                
+            elif self.lake_config.storage_type == StorageType.AZURE_BLOB:
+                if not BlobServiceClient:
+                    raise ImportError("azure-storage-blob required for Azure Blob")
+                
+                credential = DefaultAzureCredential()
+                client = BlobServiceClient(
+                    account_url=f"https://{self.lake_config.bucket_name}.blob.core.windows.net",
+                    credential=credential
+                )
+                return client
+                
+            elif self.lake_config.storage_type == StorageType.LOCAL:
+                # Local filesystem için basit wrapper
+                class LocalStorageClient:
+                    def __init__(self, base_path):
+                        self.base_path = base_path
+                        os.makedirs(base_path, exist_ok=True)
+                    
+                    def list_objects(self, prefix=""):
+                        path = os.path.join(self.base_path, prefix)
+                        objects = []
+                        for root, dirs, files in os.walk(path):
+                            for file in files:
+                                rel_path = os.path.relpath(os.path.join(root, file), self.base_path)
+                                objects.append({"Key": rel_path})
+                        return objects
+                    
+                    def download_file(self, key, local_path):
+                        src = os.path.join(self.base_path, key)
+                        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                        with open(src, 'rb') as src_file, open(local_path, 'wb') as dst_file:
+                            dst_file.write(src_file.read())
+                    
+                    def upload_file(self, local_path, key):
+                        dst = os.path.join(self.base_path, key)
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        with open(local_path, 'rb') as src_file, open(dst, 'wb') as dst_file:
+                            dst_file.write(src_file.read())
+                
+                return LocalStorageClient(self.lake_config.base_path)
+                
+            else:
+                raise ValueError(f"Unsupported storage type: {self.lake_config.storage_type}")
+                
+        except Exception as e:
+            logger.error(f"Storage client initialization failed: {str(e)}")
+            raise
+    
+    def _initialize_warehouse_client(self):
+        """Data Warehouse client başlatma"""
+        try:
+            if self.warehouse_config.warehouse_type == "bigquery":
+                if not bigquery:
+                    raise ImportError("google-cloud-bigquery required for BigQuery")
+                
+                client = bigquery.Client(project=self.warehouse_config.project_id)
+                return client
+                
+            elif self.warehouse_config.warehouse_type == "redshift":
+                # Redshift connection (using psycopg2)
+                import psycopg2
+                
+                conn = psycopg2.connect(
+                    host=self.warehouse_config.host,
+                    port=self.warehouse_config.port,
+                    database=self.warehouse_config.database,
+                    user=self.warehouse_config.username,
+                    password=self.warehouse_config.password
+                )
+                return conn
+                
+            elif self.warehouse_config.warehouse_type == "snowflake":
+                # Snowflake connection
+                import snowflake.connector
+                
+                conn = snowflake.connector.connect(
+                    user=self.warehouse_config.username,
+                    password=self.warehouse_config.password,
+                    account=self.warehouse_config.host,
+                    warehouse=self.warehouse_config.warehouse,
+                    database=self.warehouse_config.database,
+                    schema=self.warehouse_config.schema
+                )
+                return conn
+                
+            else:
+                raise ValueError(f"Unsupported warehouse type: {self.warehouse_config.warehouse_type}")
+                
+        except Exception as e:
+            logger.error(f"Warehouse client initialization failed: {str(e)}")
+            raise
+    
+    def ingest_data(self, source_path: str, 
+                   destination_key: str,
+                   data_format: DataFormat = DataFormat.PARQUET,
+                   metadata: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Data ingestion
+        
+        Args:
+            source_path: Kaynak dosya yolu
+            destination_key: Hedef key/path
+            data_format: Veri formatı
+            metadata: Ek metadata
+            
+        Returns:
+            Ingestion sonuçları
+        """
+        try:
+            ingestion_id = f"ingest_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Metadata hazırla
+            ingestion_metadata = {
+                "ingestion_id": ingestion_id,
+                "source_path": source_path,
+                "destination_key": destination_key,
+                "data_format": data_format.value,
+                "timestamp": datetime.now().isoformat(),
+                "file_size": os.path.getsize(source_path) if os.path.exists(source_path) else 0,
+                "status": "started"
+            }
+            
+            if metadata:
+                ingestion_metadata.update(metadata)
+            
+            logger.info(f"Starting ingestion: {ingestion_id}")
+            
+            # Data Lake'e yükle
+            if self.lake_config.storage_type == StorageType.S3:
+                self.storage_client.upload_file(
+                    source_path,
+                    self.lake_config.bucket_name,
+                    destination_key
+                )
+            elif self.lake_config.storage_type in [StorageType.GCS, StorageType.AZURE_BLOB]:
+                self.storage_client.upload_file(source_path, destination_key)
+            elif self.lake_config.storage_type == StorageType.LOCAL:
+                self.storage_client.upload_file(source_path, destination_key)
+            
+            # Metadata güncelle
+            ingestion_metadata["status"] = "completed"
+            ingestion_metadata["completion_time"] = datetime.now().isoformat()
+            
+            # Metadata store'a kaydet
+            self.metadata_store[ingestion_id] = ingestion_metadata
+            
+            logger.info(f"Ingestion completed: {ingestion_id}")
+            return ingestion_metadata
+            
+        except Exception as e:
+            logger.error(f"Ingestion failed: {str(e)}")
+            
+            # Hata metadata'sı
+            error_metadata = {
+                "ingestion_id": ingestion_id,
+                "status": "failed",
+                "error": str(e),
+                "error_time": datetime.now().isoformat()
+            }
+            
+            self.metadata_store[ingestion_id] = error_metadata
+            raise
+    
+    def create_data_lake_structure(self, domains: List[str]) -> Dict[str, Any]:
+        """
+        Data Lake yapısı oluştur
+        
+        Args:
+            domains: İş domain'leri
+            
+        Returns:
+            Oluşturulan yapı
+        """
+        try:
+            structure = {
+                "created_at": datetime.now().isoformat(),
+                "base_path": self.lake_config.base_path,
+                "domains": {},
+                "layers": ["raw", "processed", "curated"]
+            }
+            
+            for domain in domains:
+                domain_structure = {
+                    "raw": {},
+                    "processed": {},
+                    "curated": {}
+                }
+                
+                # Her layer için klasör yapısı oluştur
+                for layer in domain_structure.keys():
+                    paths = [
+                        f"{domain}/{layer}/bronze",   # Raw ingestion
+                        f"{domain}/{layer}/silver",   # Cleaned/processed
+                        f"{domain}/{layer}/gold",     # Business-ready
+                        f"{domain}/{layer}/archive",  # Archived data
+                        f"{domain}/{layer}/temp"      # Temporary data
+                    ]
+                    
+                    domain_structure[layer] = paths
+                    
+                    # Storage'da klasörleri oluştur
+                    for path in paths:
+                        self._create_directory(path)
+                
+                structure["domains"][domain] = domain_structure
+            
+            # Metadata'yı kaydet
+            metadata_key = f"metadata/lake_structure_{datetime.now().strftime('%Y%m%d')}.json"
+            self._save_metadata(structure, metadata_key)
+            
+            logger.info(f"Data Lake structure created for domains: {domains}")
+            return structure
+            
+        except Exception as e:
+            logger.error(f"Data Lake structure creation failed: {str(e)}")
+            raise
+    
+    def _create_directory(self, path: str):
+        """Storage'da directory oluştur"""
+        try:
+            if self.lake_config.storage_type == StorageType.S3:
+                # S3'te directory yok, ama prefix ile çalışıyoruz
+                pass
+            elif self.lake_config.storage_type == StorageType.LOCAL:
+                os.makedirs(os.path.join(self.lake_config.base_path, path), exist_ok=True)
+            
+            logger.debug(f"Directory created/verified: {path}")
+            
+        except Exception as e:
+            logger.error(f"Directory creation failed: {str(e)}")
+            raise
+    
+    def _save_metadata(self, metadata: Dict[str, Any], key: str):
+        """Metadata kaydet"""
+        try:
+            # Metadata'yı JSON olarak kaydet
+            metadata_json = json.dumps(metadata, indent=2, default=str)
+            
+            if self.lake_config.storage_type == StorageType.S3:
+                self.storage_client.put_object(
+                    Bucket=self.lake_config.bucket_name,
+                    Key=key,
+                    Body=metadata_json.encode('utf-8'),
+                    ContentType='application/json'
+                )
+            elif self.lake_config.storage_type == StorageType.LOCAL:
+                local_path = os.path.join(self.lake_config.base_path, key)
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                with open(local_path, 'w') as f:
+                    f.write(metadata_json)
+            
+            logger.debug(f"Metadata saved: {key}")
+            
+        except Exception as e:
+            logger.error(f"Metadata saving failed: {str(e)}")
+            raise
+    
+    def process_data_lake(self, domain: str, 
+                         source_layer: str = "raw",
+                         target_layer: str = "processed",
+                         processing_type: str = "cleaning") -> Dict[str, Any]:
+        """
+        Data Lake'de veri işleme
+        
+        Args:
+            domain: İş domain'i
+            source_layer: Kaynak layer
+            target_layer: Hedef layer
+            processing_type: İşleme türü
+            
+        Returns:
+            İşleme sonuçları
+        """
+        try:
+            process_id = f"process_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Source path'leri bul
+            source_path = f"{domain}/{source_layer}/bronze"
+            source_files = self._list_files(source_path)
+            
+            if not source_files:
+                logger.warning(f"No files found in source path: {source_path}")
+                return {"status": "skipped", "reason": "no_source_files"}
+            
+            # Processing metadata
+            process_metadata = {
+                "process_id": process_id,
+                "domain": domain,
+                "source_layer": source_layer,
+                "target_layer": target_layer,
+                "processing_type": processing_type,
+                "source_files": source_files,
+                "start_time": datetime.now().isoformat(),
+                "status": "processing"
+            }
+            
+            logger.info(f"Starting data processing: {process_id}")
+            
+            # Processing type'a göre işlem
+            if processing_type == "cleaning":
+                result = self._clean_data(source_files, domain, target_layer)
+            elif processing_type == "enrichment":
+                result = self._enrich_data(source_files, domain, target_layer)
+            elif processing_type == "aggregation":
+                result = self._aggregate_data(source_files, domain, target_layer)
+            else:
+                raise ValueError(f"Unsupported processing type: {processing_type}")
+            
+            # Metadata güncelle
+            process_metadata.update(result)
+            process_metadata["status"] = "completed"
+            process_metadata["completion_time"] = datetime.now().isoformat()
+            
+            # Metadata store'a kaydet
+            self.metadata_store[process_id] = process_metadata
+            
+            # Metadata'yı Data Lake'e kaydet
+            metadata_key = f"metadata/processing/{process_id}.json"
+            self._save_metadata(process_metadata, metadata_key)
+            
+            logger.info(f"Data processing completed: {process_id}")
+            return process_metadata
+            
+        except Exception as e:
+            logger.error(f"Data processing failed: {str(e)}")
+            
+            error_metadata = {
+                "process_id": process_id,
+                "status": "failed",
+                "error": str(e),
+                "error_time": datetime.now().isoformat()
+            }
+            
+            self.metadata_store[process_id] = error_metadata
+            raise
+    
+    def _list_files(self, path: str) -> List[str]:
+        """Storage'daki dosyaları listele"""
+        try:
+            if self.lake_config.storage_type == StorageType.S3:
+                response = self.storage_client.list_objects_v2(
+                    Bucket=self.lake_config.bucket_name,
+                    Prefix=path
+                )
+                
+                files = []
+                for obj in response.get('Contents', []):
+                    if not obj['Key'].endswith('/'):  # Directory değilse
+                        files.append(obj['Key'])
+                
+                return files
+                
+            elif self.lake_config.storage_type == StorageType.LOCAL:
+                full_path = os.path.join(self.lake_config.base_path, path)
+                if not os.path.exists(full_path):
+                    return []
+                
+                files = []
+                for root, dirs, filenames in os.walk(full_path):
+                    for filename in filenames:
+                        rel_path = os.path.relpath(os.path.join(root, filename), 
+                                                 self.lake_config.base_path)
+                        files.append(rel_path)
+                
+                return files
+                
+            else:
+                return []
+                
+        except Exception as e:
+            logger.error(f"File listing failed: {str(e)}")
+            return []
+    
+    def _clean_data(self, source_files: List[str], 
+                   domain: str, target_layer: str) -> Dict[str, Any]:
+        """Veri temizleme"""
+        try:
+            # Bu kısım Spark/Pandas ile implement edilebilir
+            # Şimdilik mock implementation
+            
+            cleaned_files = []
+            for source_file in source_files[:10]:  # İlk 10 dosya
+                # Temizleme işlemleri
+                # Örnek: Eksik değerleri doldur, outlier'ları işle, format dönüşümü
+                
+                # Hedef path
+                filename = os.path.basename(source_file)
+                target_file = f"{domain}/{target_layer}/silver/{filename}"
+                
+                # Mock cleaning
+                cleaned_files.append(target_file)
+                
+                logger.debug(f"Cleaned: {source_file} -> {target_file}")
+            
+            return {
+                "cleaned_files": cleaned_files,
+                "total_files": len(source_files),
+                "processed_files": len(cleaned_files)
+            }
+            
+        except Exception as e:
+            logger.error(f"Data cleaning failed: {str(e)}")
+            raise
+    
+    def _enrich_data(self, source_files: List[str],
+                    domain: str, target_layer: str) -> Dict[str, Any]:
+        """Veri zenginleştirme"""
+        try:
+            enriched_files = []
+            
+            for source_file in source_files[:10]:
+                # Zenginleştirme işlemleri
+                # Örnek: Feature engineering, external data integration
+                
+                filename = os.path.basename(source_file)
+                target_file = f"{domain}/{target_layer}/silver/enriched_{filename}"
+                
+                # Mock enrichment
+                enriched_files.append(target_file)
+                
+                logger.debug(f"Enriched: {source_file} -> {target_file}")
+            
+            return {
+                "enriched_files": enriched_files,
+                "total_files": len(source_files),
+                "processed_files": len(enriched_files)
+            }
+            
+        except Exception as e:
+            logger.error(f"Data enrichment failed: {str(e)}")
+            raise
+    
+    def _aggregate_data(self, source_files: List[str],
+                       domain: str, target_layer: str) -> Dict[str, Any]:
+        """Veri aggregation"""
+        try:
+            aggregated_files = []
+            
+            # Aggregation işlemleri
+            # Örnek: Günlük/haftalık aggregation'lar, summary istatistikler
+            
+            # Mock aggregation
+            for i in range(min(5, len(source_files))):
+                aggregated_file = f"{domain}/{target_layer}/gold/aggregated_{i}.parquet"
+                aggregated_files.append(aggregated_file)
+                
+                logger.debug(f"Aggregated file created: {aggregated_file}")
+            
+            return {
+                "aggregated_files": aggregated_files,
+                "total_files": len(source_files),
+                "aggregation_level": "daily",
+                "metrics_calculated": ["count", "sum", "avg", "min", "max"]
+            }
+            
+        except Exception as e:
+            logger.error(f"Data aggregation failed: {str(e)}")
+            raise
+    
+    def load_to_data_warehouse(self, source_key: str,
+                              table_name: str,
+                              write_mode: str = "append") -> Dict[str, Any]:
+        """
+        Data Warehouse'a yükleme
+        
+        Args:
+            source_key: Data Lake'deki kaynak key
+            table_name: Hedef tablo adı
+            write_mode: Yazma modu (append, overwrite, error)
+            
+        Returns:
+            Yükleme sonuçları
+        """
+        try:
+            if not self.warehouse_client:
+                raise ValueError("Data Warehouse client not initialized")
+            
+            load_id = f"load_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Metadata hazırla
+            load_metadata = {
+                "load_id": load_id,
+                "source_key": source_key,
+                "table_name": table_name,
+                "write_mode": write_mode,
+                "start_time": datetime.now().isoformat(),
+                "status": "loading"
+            }
+            
+            logger.info(f"Starting data warehouse load: {load_id}")
+            
+            # Warehouse type'a göre yükleme
+            if self.warehouse_config.warehouse_type == "bigquery":
+                result = self._load_to_bigquery(source_key, table_name, write_mode)
+            elif self.warehouse_config.warehouse_type == "redshift":
+                result = self._load_to_redshift(source_key, table_name, write_mode)
+            elif self.warehouse_config.warehouse_type == "snowflake":
+                result = self._load_to_snowflake(source_key, table_name, write_mode)
+            else:
+                raise ValueError(f"Unsupported warehouse type: {self.warehouse_config.warehouse_type}")
+            
+            # Metadata güncelle
+            load_metadata.update(result)
+            load_metadata["status"] = "completed"
+            load_metadata["completion_time"] = datetime.now().isoformat()
+            
+            # Metadata store'a kaydet
+            self.metadata_store[load_id] = load_metadata
+            
+            logger.info(f"Data warehouse load completed: {load_id}")
+            return load_metadata
+            
+        except Exception as e:
+            logger.error(f"Data warehouse load failed: {str(e)}")
+            
+            error_metadata = {
+                "load_id": load_id,
+                "status": "failed",
+                "error": str(e),
+                "error_time": datetime.now().isoformat()
+            }
+            
+            self.metadata_store[load_id] = error_metadata
+            raise
+    
+    def _load_to_bigquery(self, source_key: str,
+                         table_name: str,
+                         write_mode: str) -> Dict[str, Any]:
+        """BigQuery'a yükle"""
+        try:
+            # Temporary local file
+            temp_file = f"/tmp/{os.path.basename(source_key)}"
+            self._download_from_storage(source_key, temp_file)
+            
+            # Load job configuration
+            job_config = bigquery.LoadJobConfig(
+                source_format=bigquery.SourceFormat.PARQUET,
+                write_disposition=write_mode.upper()
+            )
+            
+            # Table reference
+            table_ref = f"{self.warehouse_config.project_id}.{self.warehouse_config.dataset_id}.{table_name}"
+            
+            # Load job
+            with open(temp_file, "rb") as source_file:
+                job = self.warehouse_client.load_table_from_file(
+                    source_file,
+                    table_ref,
+                    job_config=job_config
+                )
+            
+            job.result()  # Wait for completion
+            
+            # Get table info
+            table = self.warehouse_client.get_table(table_ref)
+            
+            # Cleanup
+            os.remove(temp_file)
+            
+            return {
+                "rows_loaded": table.num_rows,
+                "table_size_bytes": table.num_bytes,
+                "job_id": job.job_id,
+                "destination": table_ref
+            }
+            
+        except Exception as e:
+            logger.error(f"BigQuery load failed: {str(e)}")
+            raise
+    
+    def _load_to_redshift(self, source_key: str,
+                         table_name: str,
+                         write_mode: str) -> Dict[str, Any]:
+        """Redshift'a yükle"""
+        try:
+            # COPY command for Redshift
+            copy_command = f"""
+            COPY {table_name}
+            FROM 's3://{self.lake_config.bucket_name}/{source_key}'
+            IAM_ROLE 'arn:aws:iam::account-id:role/redshift-role'
+            FORMAT AS PARQUET
+            """
+            
+            if write_mode == "overwrite":
+                # TRUNCATE and COPY
+                truncate_command = f"TRUNCATE TABLE {table_name};"
+                with self.warehouse_client.cursor() as cursor:
+                    cursor.execute(truncate_command)
+                    cursor.execute(copy_command)
+                    self.warehouse_client.commit()
+            else:
+                # Just COPY
+                with self.warehouse_client.cursor() as cursor:
+                    cursor.execute(copy_command)
+                    self.warehouse_client.commit()
+            
+            # Get row count
+            count_command = f"SELECT COUNT(*) FROM {table_name};"
+            with self.warehouse_client.cursor() as cursor:
+                cursor.execute(count_command)
+                row_count = cursor.fetchone()[0]
+            
+            return {
+                "rows_loaded": row_count,
+                "command_used": "COPY",
+                "source": f"s3://{self.lake_config.bucket_name}/{source_key}"
+            }
+            
+        except Exception as e:
+            logger.error(f"Redshift load failed: {str(e)}")
+            raise
+    
+    def _load_to_snowflake(self, source_key: str,
+                          table_name: str,
+                          write_mode: str) -> Dict[str, Any]:
+        """Snowflake'a yükle"""
+        try:
+            # COPY INTO command for Snowflake
+            copy_command = f"""
+            COPY INTO {table_name}
+            FROM @{self.warehouse_config.database}.{self.warehouse_config.schema}.my_stage/{source_key}
+            FILE_FORMAT = (TYPE = 'PARQUET')
+            """
+            
+            if write_mode == "overwrite":
+                # Truncate and load
+                truncate_command = f"TRUNCATE TABLE {table_name};"
+                with self.warehouse_client.cursor() as cursor:
+                    cursor.execute(truncate_command)
+                    cursor.execute(copy_command)
+            else:
+                # Append
+                with self.warehouse_client.cursor() as cursor:
+                    cursor.execute(copy_command)
+            
+            # Get loaded rows
+            result_command = f"SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"
+            with self.warehouse_client.cursor() as cursor:
+                cursor.execute(result_command)
+                result = cursor.fetchone()
+            
+            return {
+                "rows_loaded": result[2] if result else 0,  # ROWS_LOADED column
+                "command_used": "COPY INTO",
+                "stage": f"@{self.warehouse_config.database}.{self.warehouse_config.schema}.my_stage"
+            }
+            
+        except Exception as e:
+            logger.error(f"Snowflake load failed: {str(e)}")
+            raise
+    
+    def _download_from_storage(self, source_key: str, local_path: str):
+        """Storage'dan dosya indir"""
+        try:
+            if self.lake_config.storage_type == StorageType.S3:
+                self.storage_client.download_file(
+                    self.lake_config.bucket_name,
+                    source_key,
+                    local_path
+                )
+            elif self.lake_config.storage_type == StorageType.LOCAL:
+                src = os.path.join(self.lake_config.base_path, source_key)
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                with open(src, 'rb') as src_file, open(local_path, 'wb') as dst_file:
+                    dst_file.write(src_file.read())
+            
+            logger.debug(f"File downloaded: {source_key} -> {local_path}")
+            
+        except Exception as e:
+            logger.error(f"File download failed: {str(e)}")
+            raise
+    
+    def create_data_pipeline(self, pipeline_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Data pipeline oluştur
+        
+        Args:
+            pipeline_config: Pipeline konfigürasyonu
+            
+        Returns:
+            Pipeline sonuçları
+        """
+        try:
+            pipeline_id = f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Pipeline metadata
+            pipeline_metadata = {
+                "pipeline_id": pipeline_id,
+                "config": pipeline_config,
+                "start_time": datetime.now().isoformat(),
+                "status": "running",
+                "stages": []
+            }
+            
+            logger.info(f"Starting data pipeline: {pipeline_id}")
+            
+            # Pipeline stages
+            stages = pipeline_config.get("stages", [])
+            
+            for i, stage_config in enumerate(stages):
+                stage_id = f"{pipeline_id}_stage_{i}"
+                
+                # Stage metadata
+                stage_metadata = {
+                    "stage_id": stage_id,
+                    "stage_name": stage_config.get("name", f"stage_{i}"),
+                    "stage_type": stage_config.get("type"),
+                    "start_time": datetime.now().isoformat(),
+                    "status": "running"
+                }
+                
+                try:
+                    # Stage tipine göre işlem
+                    stage_type = stage_config.get("type")
+                    
+                    if stage_type == "ingestion":
+                        result = self.ingest_data(
+                            source_path=stage_config["source_path"],
+                            destination_key=stage_config["destination_key"],
+                            data_format=DataFormat(stage_config.get("format", "parquet")),
+                            metadata=stage_config.get("metadata")
+                        )
+                    
+                    elif stage_type == "processing":
+                        result = self.process_data_lake(
+                            domain=stage_config["domain"],
+                            source_layer=stage_config.get("source_layer", "raw"),
+                            target_layer=stage_config.get("target_layer", "processed"),
+                            processing_type=stage_config.get("processing_type", "cleaning")
+                        )
+                    
+                    elif stage_type == "warehouse_load":
+                        result = self.load_to_data_warehouse(
+                            source_key=stage_config["source_key"],
+                            table_name=stage_config["table_name"],
+                            write_mode=stage_config.get("write_mode", "append")
+                        )
+                    
+                    else:
+                        raise ValueError(f"Unsupported stage type: {stage_type}")
+                    
+                    # Stage metadata güncelle
+                    stage_metadata.update(result)
+                    stage_metadata["status"] = "completed"
+                    stage_metadata["completion_time"] = datetime.now().isoformat()
+                    
+                except Exception as e:
+                    stage_metadata["status"] = "failed"
+                    stage_metadata["error"] = str(e)
+                    stage_metadata["error_time"] = datetime.now().isoformat()
+                    
+                    # Pipeline failure handling
+                    if pipeline_config.get("stop_on_failure", True):
+                        raise
+                
+                # Stage'i pipeline'a ekle
+                pipeline_metadata["stages"].append(stage_metadata)
+            
+            # Pipeline metadata güncelle
+            pipeline_metadata["status"] = "completed"
+            pipeline_metadata["completion_time"] = datetime.now().isoformat()
+            
+            # Metadata store'a kaydet
+            self.metadata_store[pipeline_id] = pipeline_metadata
+            
+            # Data Lake'e kaydet
+            metadata_key = f"metadata/pipelines/{pipeline_id}.json"
+            self._save_metadata(pipeline_metadata, metadata_key)
+            
+            logger.info(f"Data pipeline completed: {pipeline_id}")
+            return pipeline_metadata
+            
+        except Exception as e:
+            logger.error(f"Data pipeline failed: {str(e)}")
+            
+            error_metadata = {
+                "pipeline_id": pipeline_id,
+                "status": "failed",
+                "error": str(e),
+                "error_time": datetime.now().isoformat()
+            }
+            
+            self.metadata_store[pipeline_id] = error_metadata
+            raise
+    
+    def monitor_data_lake(self) -> Dict[str, Any]:
+        """Data Lake monitoring"""
+        try:
+            monitoring_id = f"monitor_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Monitoring metrics
+            metrics = {
+                "monitoring_id": monitoring_id,
+                "timestamp": datetime.now().isoformat(),
+                "storage_metrics": {},
+                "data_quality": {},
+                "pipeline_health": {},
+                "alerts": []
+            }
+            
+            # Storage metrics
+            storage_metrics = self._get_storage_metrics()
+            metrics["storage_metrics"] = storage_metrics
+            
+            # Data quality checks
+            data_quality = self._check_data_quality()
+            metrics["data_quality"] = data_quality
+            
+            # Pipeline health
+            pipeline_health = self._check_pipeline_health()
+            metrics["pipeline_health"] = pipeline_health
+            
+            # Alert generation
+            alerts = self._generate_monitoring_alerts(storage_metrics, data_quality, pipeline_health)
+            metrics["alerts"] = alerts
+            
+            # Metadata store'a kaydet
+            self.metadata_store[monitoring_id] = metrics
+            
+            # Data Lake'e kaydet
+            metadata_key = f"monitoring/daily/{datetime.now().strftime('%Y%m%d')}.json"
+            self._save_metadata(metrics, metadata_key)
+            
+            logger.info(f"Data Lake monitoring completed: {monitoring_id}")
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Data Lake monitoring failed: {str(e)}")
+            raise
+    
+    def _get_storage_metrics(self) -> Dict[str, Any]:
+        """Storage metriklerini al"""
+        try:
+            # Dosya sayıları
+            domains = ["finance", "content", "design", "video"]
+            
+            file_counts = {}
+            total_size = 0
+            total_files = 0
+            
+            for domain in domains:
+                domain_files = self._list_files(domain)
+                file_counts[domain] = len(domain_files)
+                total_files += len(domain_files)
+                
+                # Basit boyut hesaplama (gerçek uygulamada daha detaylı)
+                total_size += len(domain_files) * 1024 * 1024  # Mock: 1MB/file
+            
+            return {
+                "total_files": total_files,
+                "total_size_gb": total_size / (1024**3),
+                "file_counts_by_domain": file_counts,
+                "storage_utilization": min(total_size / (100 * 1024**3) * 100, 100)  # Mock: 100GB limit
+            }
+            
+        except Exception as e:
+            logger.error(f"Storage metrics collection failed: {str(e)}")
+            return {}
+    
+    def _check_data_quality(self) -> Dict[str, Any]:
+        """Data quality kontrolü"""
+        try:
+            # Basit data quality kontrolleri
+            quality_metrics = {
+                "completeness": {},
+                "consistency": {},
+                "timeliness": {},
+                "validity": {}
+            }
+            
+            # Mock quality checks
+            domains = ["finance", "content", "design", "video"]
+            
+            for domain in domains:
+                # Completeness check
+                quality_metrics["completeness"][domain] = {
+                    "score": 0.95,  % Mock
+                    "missing_data_files": 2,
+                    "total_files": 100
+                }
+                
+                # Consistency check
+                quality_metrics["consistency"][domain] = {
+                    "score": 0.98,
+                    "inconsistent_files": 1,
+                    "schema_violations": 0
+                }
+                
+                # Timeliness check
+                quality_metrics["timeliness"][domain] = {
+                    "score": 0.90,
+                    "stale_files": 5,
+                    "avg_freshness_hours": 2.5
+                }
+                
+                # Validity check
+                quality_metrics["validity"][domain] = {
+                    "score": 0.99,
+                    "invalid_records": 10,
+                    "total_records": 10000
+                }
+            
+            # Overall quality score
+            overall_score = np.mean([
+                np.mean([v["score"] for v in quality_metrics["completeness"].values()]),
+                np.mean([v["score"] for v in quality_metrics["consistency"].values()]),
+                np.mean([v["score"] for v in quality_metrics["timeliness"].values()]),
+                np.mean([v["score"] for v in quality_metrics["validity"].values()])
+            ])
+            
+            quality_metrics["overall_score"] = overall_score
+            quality_metrics["quality_grade"] = "A" if overall_score > 0.9 else "B" if overall_score > 0.8 else "C"
+            
+            return quality_metrics
+            
+        except Exception as e:
+            logger.error(f"Data quality check failed: {str(e)}")
+            return {}
+    
+    def _check_pipeline_health(self) -> Dict[str, Any]:
+        """Pipeline health kontrolü"""
+        try:
+            # Son 24 saatteki pipeline'lar
+            recent_pipelines = [
+                pid for pid in self.metadata_store.keys()
+                if pid.startswith("pipeline_")
+            ][-10:]  # Son 10 pipeline
+            
+            health_metrics = {
+                "total_pipelines": len(recent_pipelines),
+                "successful_pipelines": 0,
+                "failed_pipelines": 0,
+                "pipeline_details": [],
+                "success_rate": 0
+            }
+            
+            for pid in recent_pipelines:
+                pipeline_data = self.metadata_store.get(pid, {})
+                status = pipeline_data.get("status", "unknown")
+                
+                if status == "completed":
+                    health_metrics["successful_pipelines"] += 1
+                elif status == "failed":
+                    health_metrics["failed_pipelines"] += 1
+                
+                # Pipeline detayları
+                health_metrics["pipeline_details"].append({
+                    "pipeline_id": pid,
+                    "status": status,
+                    "start_time": pipeline_data.get("start_time"),
+                    "duration_minutes": self._calculate_duration(pipeline_data)
+                })
+            
+            # Success rate
+            total = health_metrics["total_pipelines"]
+            if total > 0:
+                health_metrics["success_rate"] = health_metrics["successful_pipelines"] / total
+            
+            return health_metrics
+            
+        except Exception as e:
+            logger.error(f"Pipeline health check failed: {str(e)}")
+            return {}
+    
+    def _calculate_duration(self, pipeline_data: Dict[str, Any]) -> float:
+        """Pipeline süresi hesapla"""
+        try:
+            start_str = pipeline_data.get("start_time")
+            end_str = pipeline_data.get("completion_time")
+            
+            if not start_str or not end_str:
+                return 0.0
+            
+            start_time = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+            end_time = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
+            
+            duration = (end_time - start_time).total_seconds() / 60  # Dakika
+            return duration
+            
+        except:
+            return 0.0
+    
+    def _generate_monitoring_alerts(self, storage_metrics: Dict[str, Any],
+                                  data_quality: Dict[str, Any],
+                                  pipeline_health: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Monitoring alert'leri oluştur"""
+        alerts = []
+        
+        try:
+            # Storage alert'leri
+            if storage_metrics.get("storage_utilization", 0) > 90:
+                alerts.append({
+                    "type": "storage_critical",
+                    "severity": "critical",
+                    "message": f"Storage utilization critical: {storage_metrics['storage_utilization']:.1f}%",
+                    "threshold": 90,
+                    "current_value": storage_metrics["storage_utilization"]
+                })
+            
+            # Data quality alert'leri
+            if data_quality.get("overall_score", 1) < 0.8:
+                alerts.append({
+                    "type": "data_quality_low",
+                    "severity": "high",
+                    "message": f"Data quality score low: {data_quality['overall_score']:.2f}",
+                    "threshold": 0.8,
+                    "current_value": data_quality["overall_score"]
+                })
+            
+            # Pipeline health alert'leri
+            if pipeline_health.get("success_rate", 1) < 0.9:
+                alerts.append({
+                    "type": "pipeline_health_low",
+                    "severity": "high",
+                    "message": f"Pipeline success rate low: {pipeline_health['success_rate']:.1%}",
+                    "threshold": 0.9,
+                    "current_value": pipeline_health["success_rate"]
+                })
+            
+            # File count alert
+            if storage_metrics.get("total_files", 0) == 0:
+                alerts.append({
+                    "type": "no_files_found",
+                    "severity": "critical",
+                    "message": "No files found in Data Lake",
+                    "current_value": 0
+                })
+            
+            return alerts
+            
+        except Exception as e:
+            logger.error(f"Alert generation failed: {str(e)}")
+            return []
+
+# Kullanım örneği
+if __name__ == "__main__":
+    # Data Lake konfigürasyonu (local storage için)
+    lake_config = DataLakeConfig(
+        storage_type=StorageType.LOCAL,
+        bucket_name="muco-data-lake",
+        base_path="/tmp/muco-data-lake"
+    )
+    
+    # Data Warehouse konfigürasyonu (BigQuery için)
+    warehouse_config = DataWarehouseConfig(
+        warehouse_type="bigquery",
+        project_id="muco-project",
+        dataset_id="muco_dataset"
+    )
+    
+    # Data Lakehouse oluştur
+    lakehouse = MucoDataLakehouse(lake_config, warehouse_config)
+    
+    # Data Lake yapısı oluştur
+    domains = ["finance", "content", "design", "video", "analytics"]
+    structure = lakehouse.create_data_lake_structure(domains)
+    print(f"Data Lake structure created: {json.dumps(structure, indent=2)[:500]}...")
+    
+    # Mock veri dosyası oluştur
+    import pandas as pd
+    mock_data = pd.DataFrame({
+        'timestamp': pd.date_range('2023-01-01', periods=100, freq='H'),
+        'symbol': ['AAPL', 'GOOGL', 'MSFT'] * 33 + ['AAPL'],
+        'price': np.random.randn(100) * 10 + 150,
+        'volume': np.random.randint(1000, 10000, 100)
+    })
+    
+    mock_file = "/tmp/mock_finance_data.parquet"
+    mock_data.to_parquet(mock_file)
+    
+    # Data ingestion
+    ingestion_result = lakehouse.ingest_data(
+        source_path=mock_file,
+        destination_key="finance/raw/bronze/mock_data.parquet",
+        data_format=DataFormat.PARQUET,
+        metadata={
+            "source": "mock",
+            "domain": "finance",
+            "record_count": len(mock_data)
+        }
+    )
+    print(f"\nIngestion completed: {ingestion_result['ingestion_id']}")
+    
+    # Data processing
+    processing_result = lakehouse.process_data_lake(
+        domain="finance",
+        source_layer="raw",
+        target_layer="processed",
+        processing_type="cleaning"
+    )
+    print(f"\nProcessing completed: {processing_result['process_id']}")
+    
+    # Data pipeline oluştur
+    pipeline_config = {
+        "name": "finance_daily_pipeline",
+        "description": "Daily finance data pipeline",
+        "stop_on_failure": True,
+        "stages": [
+            {
+                "name": "ingest_market_data",
+                "type": "ingestion",
+                "source_path": "/tmp/mock_market_data.parquet",
+                "destination_key": "finance/raw/bronze/daily_market_data.parquet",
+                "format": "parquet"
+            },
+            {
+                "name": "clean_finance_data",
+                "type": "processing",
+                "domain": "finance",
+                "source_layer": "raw",
+                "target_layer": "processed",
+                "processing_type": "cleaning"
+            },
+            {
+                "name": "load_to_warehouse",
+                "type": "warehouse_load",
+                "source_key": "finance/processed/silver/cleaned_data.parquet",
+                "table_name": "finance_market_data",
+                "write_mode": "append"
+            }
+        ]
+    }
+    
+    pipeline_result = lakehouse.create_data_pipeline(pipeline_config)
+    print(f"\nPipeline completed: {pipeline_result['pipeline_id']}")
+    
+    # Data Lake monitoring
+    monitoring_result = lakehouse.monitor_data_lake()
+    print(f"\nMonitoring completed: {monitoring_result['monitoring_id']}")
+    print(f"Storage metrics: {monitoring_result['storage_metrics']}")
+    print(f"Data quality score: {monitoring_result['data_quality'].get('overall_score', 0):.2f}")
+    print(f"Alerts: {len(monitoring_result['alerts'])}")
+    
+    # Metadata store'u göster
+    print(f"\nMetadata store size: {len(lakehouse.metadata_store)} entries")
+    
+    # Cleanup
+    os.remove(mock_file)
+    print("\nData Lakehouse demo completed successfully!")
+Kurulum ve Gereksinimler
+bash
+# 1. Temel bağımlılıklar
+pip install pyspark>=3.4.0
+pip install pandas numpy scipy scikit-learn
+pip install dask[complete]>=2023.1.0
+pip install modin[all]>=0.17.0
+pip install delta-spark>=2.4.0
+
+# 2. Cloud bağımlılıkları (opsiyonel)
+pip install boto3  # AWS S3
+pip install google-cloud-storage google-cloud-bigquery  # GCP
+pip install azure-storage-blob azure-identity  # Azure
+pip install snowflake-connector-python  # Snowflake
+pip install psycopg2-binary  # PostgreSQL/Redshift
+
+# 3. Stream processing için
+pip install kafka-python>=2.0.2
+pip install pyspark-kafka  # Kafka integration
+
+# 4. Monitoring ve logging
+pip install prometheus-client>=0.17.0
+pip install grafanalib>=0.7.1
+pip install evidently>=0.3.0
+
+# 5. Data visualization
+pip install plotly>=5.14.0
+pip install dash>=2.11.0
+pip install bokeh>=3.1.0
+
+# 6. Diğer yardımcı kütüphaneler
+pip install pyarrow>=12.0.0
+pip install fastparquet>=2023.4.0
+pip install joblib>=1.3.0
+pip install tqdm>=4.65.0
+
+# 7. Spark kurulumu (alternatif)
+# Download Spark: https://spark.apache.org/downloads.html
+export SPARK_HOME=/path/to/spark
+export PATH=$SPARK_HOME/bin:$PATH
+Production Deployment için Öneriler
+1. Spark Cluster Konfigürasyonu
+yaml
+# spark-defaults.conf
+spark.master                     yarn
+spark.executor.memory            8g
+spark.driver.memory              4g
+spark.executor.cores             4
+spark.driver.cores               2
+spark.executor.instances         10
+spark.default.parallelism        200
+spark.sql.shuffle.partitions     200
+spark.serializer                 org.apache.spark.serializer.KryoSerializer
+spark.kryoserializer.buffer.max  1g
+spark.sql.adaptive.enabled       true
+spark.sql.adaptive.coalescePartitions.enabled true
+2. Dask Cluster Konfigürasyonu
+python
+# dask_cluster.yaml
+cluster:
+  name: muco-dask-cluster
+  cloudprovider:
+    name: kubernetes
+  worker:
+    cores: 4
+    memory: "8GB"
+    nthreads: 2
+    count: 10
+  scheduler:
+    cores: 2
+    memory: "4GB"
+  autoscale:
+    minimum: 5
+    maximum: 50
+3. Data Lake Architecture
+text
+muco-data-lake/
+├── raw/                    # Raw ingested data
+│   ├── finance/
+│   │   ├── bronze/        # Initial ingestion
+│   │   └── archive/       # Archived raw data
+│   ├── content/
+│   ├── design/
+│   └── video/
+├── processed/             # Processed data
+│   ├── finance/
+│   │   ├── silver/       # Cleaned data
+│   │   └── gold/         # Business-ready data
+│   └── ...
+├── curated/              # Curated datasets
+│   ├── analytics/
+│   ├── reporting/
+│   └── machine_learning/
+├── metadata/             # Metadata store
+│   ├── schemas/
+│   ├── lineage/
+│   └── quality/
+└── temp/                 # Temporary data
+Bu büyük veri ve veri analizi modülleri, MUCO platformunu petabyte ölçeğinde veri işleme kapasitesine sahip bir enterprise çözüm haline getirecektir. Her modül bağımsız olarak çalışabilir ve birlikte entegre edilebilir.
+
+Bu yanıt, yalnızca referans amaçlı AI tarafından oluşturulmuştur.

@@ -1,0 +1,2918 @@
+yukarıdaki sinir ağlarının makina öğrenmesini kodla ve geliştir
+We are going to develop machine learning models for the MUCO platform. We will focus on:
+
+Financial Time Series Prediction (using LSTM and other models)
+
+Content Generation (using Transformer-based models)
+
+Logo and Design Generation (using GANs and other generative models)
+
+Video Content Analysis (using CNN-LSTM or 3D CNNs)
+
+However, note that the previous code already includes some of these. We will expand and improve upon them.
+
+Let's break down the tasks:
+
+Financial Time Series Prediction:
+
+We already have an LSTM model. We can add other models like ARIMA, Prophet, and Gradient Boosting for comparison.
+
+We will create a pipeline for data collection, preprocessing, model training, and evaluation.
+
+Content Generation:
+
+We already have a transformer-based content generator. We can improve it by fine-tuning on domain-specific data.
+
+We can also add a summarization model and a sentiment analysis model for content optimization.
+
+Logo and Design Generation:
+
+We have a GAN model for logo generation. We can improve it by using conditional GANs and incorporating style transfer.
+
+We can also add a CNN-based logo classification and recommendation system.
+
+Video Content Analysis:
+
+We have a CNN-LSTM model for video classification. We can improve it by using 3D CNNs and adding action recognition.
+
+Due to the complexity, we will structure the code into different modules.
+
+Let's start by creating a machine learning pipeline for financial time series prediction with multiple models.
+
+MUCO Platform için Gelişmiş Makine Öğrenmesi Algoritmaları
+MUCO platformunu güçlendirmek için genişletilmiş geleneksel makine öğrenmesi ve ensemble yöntemleri:
+
+1. Finansal Tahmin için Ensemble ML Modelleri
+python
+# muco_ml_finance.py
+import numpy as np
+import pandas as pd
+import yfinance as yf
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
+
+# Scikit-learn modelleri
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, StackingRegressor
+from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
+from sklearn.svm import SVR
+from sklearn.neural_network import MLPRegressor
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+from catboost import CatBoostRegressor
+
+# Ön işleme ve değerlendirme
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
+from sklearn.model_selection import TimeSeriesSplit, GridSearchCV, RandomizedSearchCV
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, mean_absolute_percentage_error
+from sklearn.feature_selection import RFE, SelectFromModel
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+
+# İstatistiksel modeller
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from prophet import Prophet
+import pmdarima as pm
+
+class FinancialEnsembleML:
+    def __init__(self):
+        self.models = {}
+        self.scalers = {}
+        self.feature_importance = {}
+        self.best_model = None
+        
+    def prepare_features(self, symbol='AAPL', period='2y'):
+        """Finansal özellik mühendisliği"""
+        stock = yf.Ticker(symbol)
+        df = stock.history(period=period)
+        
+        # Temel özellikler
+        df['Returns'] = df['Close'].pct_change()
+        df['Log_Returns'] = np.log(df['Close'] / df['Close'].shift(1))
+        df['Volume_Change'] = df['Volume'].pct_change()
+        
+        # Teknik göstergeler
+        df = self.calculate_technical_indicators(df)
+        
+        # Piyasa göstergeleri
+        df = self.calculate_market_indicators(df)
+        
+        # İstatistiksel özellikler
+        df = self.calculate_statistical_features(df)
+        
+        # Fourier dönüşümü özellikleri
+        df = self.calculate_fourier_features(df)
+        
+        # Ekonomik veriler (simüle edilmiş)
+        df = self.add_economic_features(df)
+        
+        # Lag özellikleri
+        df = self.create_lag_features(df)
+        
+        # Hedef değişken (1, 3, 7, 30 günlük getiriler)
+        for horizon in [1, 3, 7, 30]:
+            df[f'Target_{horizon}d'] = df['Close'].shift(-horizon) / df['Close'] - 1
+        
+        df = df.dropna()
+        return df
+    
+    def calculate_technical_indicators(self, df):
+        """Teknik analiz göstergeleri"""
+        # Hareketli ortalamalar
+        windows = [5, 10, 20, 50, 100, 200]
+        for window in windows:
+            df[f'SMA_{window}'] = df['Close'].rolling(window=window).mean()
+            df[f'EMA_{window}'] = df['Close'].ewm(span=window, adjust=False).mean()
+        
+        # Bollinger Bantları
+        df['BB_middle'] = df['Close'].rolling(window=20).mean()
+        bb_std = df['Close'].rolling(window=20).std()
+        df['BB_upper'] = df['BB_middle'] + 2 * bb_std
+        df['BB_lower'] = df['BB_middle'] - 2 * bb_std
+        df['BB_width'] = (df['BB_upper'] - df['BB_lower']) / df['BB_middle']
+        
+        # RSI
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        # MACD
+        exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = exp1 - exp2
+        df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        df['MACD_hist'] = df['MACD'] - df['MACD_signal']
+        
+        # Stochastic Oscillator
+        low_14 = df['Low'].rolling(window=14).min()
+        high_14 = df['High'].rolling(window=14).max()
+        df['Stochastic_K'] = 100 * ((df['Close'] - low_14) / (high_14 - low_14))
+        df['Stochastic_D'] = df['Stochastic_K'].rolling(window=3).mean()
+        
+        # ATR (Average True Range)
+        high_low = df['High'] - df['Low']
+        high_close = np.abs(df['High'] - df['Close'].shift())
+        low_close = np.abs(df['Low'] - df['Close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = np.max(ranges, axis=1)
+        df['ATR'] = true_range.rolling(window=14).mean()
+        
+        # ADX (Average Directional Index)
+        df['TR'] = true_range
+        df['+DM'] = np.where(
+            (df['High'] - df['High'].shift(1)) > (df['Low'].shift(1) - df['Low']),
+            np.maximum(df['High'] - df['High'].shift(1), 0),
+            0
+        )
+        df['-DM'] = np.where(
+            (df['Low'].shift(1) - df['Low']) > (df['High'] - df['High'].shift(1)),
+            np.maximum(df['Low'].shift(1) - df['Low'], 0),
+            0
+        )
+        
+        # On Balance Volume
+        df['OBV'] = (np.sign(df['Close'].diff()) * df['Volume']).fillna(0).cumsum()
+        
+        return df
+    
+    def calculate_market_indicators(self, df):
+        """Piyasa göstergeleri"""
+        # Volatilite ölçüleri
+        df['Volatility_20d'] = df['Returns'].rolling(window=20).std() * np.sqrt(252)
+        df['Volatility_60d'] = df['Returns'].rolling(window=60).std() * np.sqrt(252)
+        
+        # Sharpe Oranı (basitleştirilmiş)
+        df['Sharpe_20d'] = (df['Returns'].rolling(window=20).mean() * 252) / \
+                          (df['Returns'].rolling(window=20).std() * np.sqrt(252) + 1e-8)
+        
+        # Beta (simüle edilmiş - S&P 500 ile korelasyon)
+        market_returns = np.random.normal(0.0005, 0.01, len(df))  # Simüle piyasa getirisi
+        df['Beta'] = df['Returns'].rolling(window=60).apply(
+            lambda x: np.cov(x, market_returns[-len(x):])[0,1] / np.var(market_returns[-len(x):]) if len(x) > 1 else np.nan
+        )
+        
+        # Momentum
+        for period in [5, 10, 20, 60]:
+            df[f'Momentum_{period}d'] = df['Close'] / df['Close'].shift(period) - 1
+        
+        # Çarpıklık ve Basıklık
+        df['Skewness_20d'] = df['Returns'].rolling(window=20).skew()
+        df['Kurtosis_20d'] = df['Returns'].rolling(window=20).kurt()
+        
+        return df
+    
+    def calculate_statistical_features(self, df):
+        """İstatistiksel özellikler"""
+        # Z-skoru
+        df['Z_Score_20d'] = (df['Close'] - df['Close'].rolling(window=20).mean()) / \
+                           df['Close'].rolling(window=20).std()
+        
+        # Değişim yüzdesi
+        df['Pct_Change_5d'] = df['Close'].pct_change(5)
+        df['Pct_Change_20d'] = df['Close'].pct_change(20)
+        
+        # Ortalama mutlak sapma
+        df['MAD_20d'] = df['Close'].rolling(window=20).apply(lambda x: np.mean(np.abs(x - np.mean(x))))
+        
+        # Autocorrelation
+        df['Autocorr_5d'] = df['Returns'].rolling(window=60).apply(
+            lambda x: pd.Series(x).autocorr(lag=5) if len(x) > 5 else np.nan
+        )
+        
+        # Hurst Exponent (basitleştirilmiş)
+        df['Hurst'] = df['Returns'].rolling(window=100).apply(self.calculate_hurst)
+        
+        return df
+    
+    def calculate_hurst(self, returns):
+        """Hurst exponent hesaplama"""
+        if len(returns) < 20:
+            return np.nan
+        
+        lags = range(2, 20)
+        tau = [np.std(np.subtract(returns[lag:], returns[:-lag])) for lag in lags]
+        poly = np.polyfit(np.log(lags), np.log(tau), 1)
+        return poly[0]
+    
+    def calculate_fourier_features(self, df):
+        """Fourier dönüşümü özellikleri"""
+        prices = df['Close'].values
+        
+        # FFT
+        fft_values = np.fft.fft(prices - np.mean(prices))
+        fft_freq = np.fft.fftfreq(len(prices))
+        
+        # Dominant frekanslar
+        idx = np.argsort(np.abs(fft_values))[::-1][:5]
+        dominant_freqs = fft_freq[idx]
+        dominant_amps = np.abs(fft_values[idx])
+        
+        for i in range(min(5, len(dominant_freqs))):
+            df[f'FFT_Freq_{i+1}'] = dominant_freqs[i]
+            df[f'FFT_Amp_{i+1}'] = dominant_amps[i]
+        
+        return df
+    
+    def add_economic_features(self, df):
+        """Ekonomik veriler (simüle)"""
+        # Faiz oranları, enflasyon vb.
+        dates = df.index
+        n = len(dates)
+        
+        # Simüle ekonomik veriler
+        df['Interest_Rate'] = np.random.uniform(0.01, 0.05, n)
+        df['Inflation_Rate'] = np.random.uniform(0.02, 0.06, n)
+        df['GDP_Growth'] = np.random.uniform(-0.02, 0.04, n)
+        df['VIX'] = np.random.uniform(10, 40, n)  # Volatilite endeksi
+        
+        return df
+    
+    def create_lag_features(self, df, max_lag=10):
+        """Lag özellikleri oluşturma"""
+        columns_to_lag = ['Close', 'Volume', 'Returns', 'RSI', 'MACD']
+        
+        for col in columns_to_lag:
+            for lag in range(1, max_lag + 1):
+                df[f'{col}_Lag_{lag}'] = df[col].shift(lag)
+        
+        return df
+    
+    def split_data(self, df, target_horizon=1, test_size=0.2):
+        """Veriyi train/test olarak ayırma"""
+        features = [col for col in df.columns if not col.startswith('Target_')]
+        target = f'Target_{target_horizon}d'
+        
+        X = df[features].copy()
+        y = df[target].copy()
+        
+        # Time-based split
+        split_idx = int(len(X) * (1 - test_size))
+        
+        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+        
+        return X_train, X_test, y_train, y_test, features
+    
+    def create_ensemble_models(self):
+        """Ensemble model koleksiyonu"""
+        base_models = [
+            ('lr', LinearRegression()),
+            ('ridge', Ridge(alpha=1.0)),
+            ('lasso', Lasso(alpha=0.01)),
+            ('elastic', ElasticNet(alpha=0.01, l1_ratio=0.5)),
+            ('rf', RandomForestRegressor(n_estimators=100, random_state=42)),
+            ('gb', GradientBoostingRegressor(n_estimators=100, random_state=42)),
+            ('xgb', XGBRegressor(n_estimators=100, random_state=42)),
+            ('lgbm', LGBMRegressor(n_estimators=100, random_state=42)),
+            ('cat', CatBoostRegressor(iterations=100, silent=True, random_state=42)),
+            ('svr', SVR(kernel='rbf', C=100, gamma=0.1)),
+            ('mlp', MLPRegressor(hidden_layer_sizes=(100, 50), max_iter=1000, random_state=42))
+        ]
+        
+        # Stacking modeli
+        meta_model = LinearRegression()
+        stacking_model = StackingRegressor(
+            estimators=base_models[:6],
+            final_estimator=meta_model,
+            cv=5
+        )
+        
+        base_models.append(('stacking', stacking_model))
+        
+        return base_models
+    
+    def train_models(self, X_train, y_train, X_test, y_test):
+        """Tüm modelleri eğitme ve değerlendirme"""
+        results = {}
+        models = self.create_ensemble_models()
+        
+        for name, model in models:
+            try:
+                print(f"Eğitiliyor: {name}")
+                
+                # Model eğitimi
+                model.fit(X_train, y_train)
+                
+                # Tahminler
+                y_pred_train = model.predict(X_train)
+                y_pred_test = model.predict(X_test)
+                
+                # Metrikler
+                metrics = {
+                    'train_r2': r2_score(y_train, y_pred_train),
+                    'test_r2': r2_score(y_test, y_pred_test),
+                    'train_mae': mean_absolute_error(y_train, y_pred_train),
+                    'test_mae': mean_absolute_error(y_test, y_pred_test),
+                    'train_rmse': np.sqrt(mean_squared_error(y_train, y_pred_train)),
+                    'test_rmse': np.sqrt(mean_squared_error(y_test, y_pred_test)),
+                    'train_mape': mean_absolute_percentage_error(y_train, y_pred_train),
+                    'test_mape': mean_absolute_percentage_error(y_test, y_pred_test)
+                }
+                
+                # Modeli kaydet
+                self.models[name] = model
+                results[name] = metrics
+                
+                # Feature importance (destekleyen modeller için)
+                if hasattr(model, 'feature_importances_'):
+                    self.feature_importance[name] = model.feature_importances_
+                
+                print(f"{name} - Test R2: {metrics['test_r2']:.4f}, Test RMSE: {metrics['test_rmse']:.4f}")
+                
+            except Exception as e:
+                print(f"{name} modelinde hata: {str(e)}")
+                continue
+        
+        # En iyi modeli seç
+        self.best_model = max(results, key=lambda x: results[x]['test_r2'])
+        
+        return results
+    
+    def optimize_hyperparameters(self, X_train, y_train, model_type='rf'):
+        """Hiperparametre optimizasyonu"""
+        param_grids = {
+            'rf': {
+                'n_estimators': [50, 100, 200],
+                'max_depth': [None, 10, 20, 30],
+                'min_samples_split': [2, 5, 10],
+                'min_samples_leaf': [1, 2, 4],
+                'max_features': ['auto', 'sqrt', 'log2']
+            },
+            'xgb': {
+                'n_estimators': [50, 100, 200],
+                'max_depth': [3, 5, 7, 10],
+                'learning_rate': [0.01, 0.05, 0.1, 0.2],
+                'subsample': [0.6, 0.8, 1.0],
+                'colsample_bytree': [0.6, 0.8, 1.0]
+            },
+            'lgbm': {
+                'n_estimators': [50, 100, 200],
+                'num_leaves': [31, 50, 100],
+                'learning_rate': [0.01, 0.05, 0.1],
+                'max_depth': [-1, 10, 20],
+                'subsample': [0.6, 0.8, 1.0]
+            },
+            'svr': {
+                'C': [0.1, 1, 10, 100],
+                'gamma': [0.001, 0.01, 0.1, 1],
+                'kernel': ['linear', 'rbf', 'poly']
+            }
+        }
+        
+        if model_type not in param_grids:
+            print(f"{model_type} için parametre grid tanımlı değil")
+            return None
+        
+        # TimeSeriesSplit kullan
+        tscv = TimeSeriesSplit(n_splits=5)
+        
+        # Model seçimi
+        if model_type == 'rf':
+            base_model = RandomForestRegressor(random_state=42)
+        elif model_type == 'xgb':
+            base_model = XGBRegressor(random_state=42)
+        elif model_type == 'lgbm':
+            base_model = LGBMRegressor(random_state=42)
+        elif model_type == 'svr':
+            base_model = SVR()
+        
+        # Grid search
+        grid_search = GridSearchCV(
+            estimator=base_model,
+            param_grid=param_grids[model_type],
+            cv=tscv,
+            scoring='neg_mean_squared_error',
+            n_jobs=-1,
+            verbose=1
+        )
+        
+        grid_search.fit(X_train, y_train)
+        
+        print(f"En iyi parametreler: {grid_search.best_params_}")
+        print(f"En iyi skor: {-grid_search.best_score_:.4f}")
+        
+        return grid_search.best_estimator_
+    
+    def create_voting_ensemble(self, X_train, y_train):
+        """Voting ensemble oluşturma"""
+        from sklearn.ensemble import VotingRegressor
+        
+        # Bireysel modeller
+        models = [
+            ('rf', RandomForestRegressor(n_estimators=100, random_state=42)),
+            ('xgb', XGBRegressor(n_estimators=100, random_state=42)),
+            ('lgbm', LGBMRegressor(n_estimators=100, random_state=42)),
+            ('gb', GradientBoostingRegressor(n_estimators=100, random_state=42))
+        ]
+        
+        # Voting ensemble
+        voting_reg = VotingRegressor(
+            estimators=models,
+            weights=[0.25, 0.25, 0.25, 0.25]  # Eşit ağırlıklar
+        )
+        
+        voting_reg.fit(X_train, y_train)
+        self.models['voting'] = voting_reg
+        
+        return voting_reg
+    
+    def feature_selection(self, X_train, y_train, method='rfe', n_features=20):
+        """Özellik seçimi"""
+        if method == 'rfe':
+            # Recursive Feature Elimination
+            estimator = RandomForestRegressor(n_estimators=100, random_state=42)
+            selector = RFE(estimator, n_features_to_select=n_features)
+            selector.fit(X_train, y_train)
+            selected_features = X_train.columns[selector.support_]
+            
+        elif method == 'importance':
+            # Feature importance based selection
+            model = RandomForestRegressor(n_estimators=100, random_state=42)
+            model.fit(X_train, y_train)
+            importances = model.feature_importances_
+            
+            # En önemli özellikleri seç
+            indices = np.argsort(importances)[-n_features:]
+            selected_features = X_train.columns[indices]
+            
+        elif method == 'lasso':
+            # L1 regularization with Lasso
+            lasso = Lasso(alpha=0.001, random_state=42)
+            lasso.fit(X_train, y_train)
+            selected_features = X_train.columns[lasso.coef_ != 0]
+            
+        return selected_features
+    
+    def calculate_model_confidence(self, X, ensemble_models=None):
+        """Model güven aralıkları"""
+        if ensemble_models is None:
+            ensemble_models = ['rf', 'xgb', 'lgbm', 'gb']
+        
+        predictions = []
+        for model_name in ensemble_models:
+            if model_name in self.models:
+                pred = self.models[model_name].predict(X)
+                predictions.append(pred)
+        
+        if not predictions:
+            return None, None
+        
+        predictions = np.array(predictions)
+        
+        # Ortalama tahmin
+        mean_prediction = np.mean(predictions, axis=0)
+        
+        # Standart sapma (güven aralığı)
+        std_prediction = np.std(predictions, axis=0)
+        
+        return mean_prediction, std_prediction
+    
+    def generate_trading_signals(self, df, horizon=1):
+        """Trading sinyalleri üretme"""
+        features = [col for col in df.columns if not col.startswith('Target_')]
+        X = df[features].copy()
+        
+        if self.best_model is None:
+            print("Önce model eğitilmeli!")
+            return None
+        
+        # Tahminler
+        predictions = self.models[self.best_model].predict(X)
+        
+        # Trading sinyalleri
+        signals = pd.DataFrame(index=df.index)
+        signals['Predicted_Return'] = predictions
+        signals['Signal'] = 0
+        
+        # Sinyal kuralları
+        buy_threshold = np.percentile(predictions, 70)  # En iyi %30
+        sell_threshold = np.percentile(predictions, 30)  # En kötü %30
+        
+        signals.loc[signals['Predicted_Return'] > buy_threshold, 'Signal'] = 1  # Al
+        signals.loc[signals['Predicted_Return'] < sell_threshold, 'Signal'] = -1  # Sat
+        
+        # Holding periyodu
+        signals['Holding_Period'] = horizon
+        
+        # Risk yönetimi
+        signals['Position_Size'] = 0.1  % 10% risk
+        
+        return signals
+
+# Kullanım örneği
+if __name__ == "__main__":
+    # Ensemble ML modelini oluştur
+    ensemble_ml = FinancialEnsembleML()
+    
+    # Verileri hazırla
+    df = ensemble_ml.prepare_features('AAPL', period='5y')
+    print(f"Özellik sayısı: {len(df.columns)}")
+    print(f"Satır sayısı: {len(df)}")
+    
+    # Veriyi böl
+    X_train, X_test, y_train, y_test, features = ensemble_ml.split_data(df, target_horizon=7, test_size=0.2)
+    print(f"Eğitim verisi: {len(X_train)} satır, Test verisi: {len(X_test)} satır")
+    
+    # Özellik seçimi
+    selected_features = ensemble_ml.feature_selection(X_train, y_train, method='importance', n_features=30)
+    X_train_selected = X_train[selected_features]
+    X_test_selected = X_test[selected_features]
+    print(f"Seçilen özellik sayısı: {len(selected_features)}")
+    
+    # Modelleri eğit
+    results = ensemble_ml.train_models(X_train_selected, y_train, X_test_selected, y_test)
+    
+    # En iyi model
+    print(f"\nEn iyi model: {ensemble_ml.best_model}")
+    print(f"Test R2: {results[ensemble_ml.best_model]['test_r2']:.4f}")
+    
+    # Trading sinyalleri üret
+    signals = ensemble_ml.generate_trading_signals(df[selected_features].tail(100), horizon=7)
+    
+    if signals is not None:
+        print(f"\nTrading sinyalleri:")
+        print(signals['Signal'].value_counts())
+2. İçerik Optimizasyonu için ML Modelleri
+python
+# muco_content_ml.py
+import pandas as pd
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer, HashingVectorizer
+from sklearn.decomposition import LatentDirichletAllocation, NMF, TruncatedSVD
+from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
+from sklearn.manifold import TSNE
+from sklearn.metrics import silhouette_score, calinski_harabasz_score
+import nltk
+from nltk.tokenize import word_tokenize, sent_tokenize
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer, PorterStemmer
+from textblob import TextBlob
+import gensim
+from gensim import corpora, models
+import spacy
+import re
+
+# Gerekli NLTK verilerini indir
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('wordnet')
+
+class ContentOptimizationML:
+    def __init__(self):
+        self.vectorizer = None
+        self.topic_model = None
+        self.cluster_model = None
+        self.nlp = spacy.load('en_core_web_sm')
+        self.stop_words = set(stopwords.words('english'))
+        self.lemmatizer = WordNetLemmatizer()
+        self.stemmer = PorterStemmer()
+        
+    def preprocess_text(self, text, language='english'):
+        """Metin ön işleme"""
+        if not isinstance(text, str):
+            return ""
+        
+        # Küçük harfe çevir
+        text = text.lower()
+        
+        # URL'leri kaldır
+        text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
+        
+        # Özel karakterleri kaldır
+        text = re.sub(r'[^\w\s]', ' ', text)
+        
+        # Rakamları kaldır
+        text = re.sub(r'\d+', '', text)
+        
+        # Fazla boşlukları kaldır
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Tokenization
+        tokens = word_tokenize(text)
+        
+        # Stop words kaldırma
+        tokens = [word for word in tokens if word not in self.stop_words and len(word) > 2]
+        
+        # Lemmatization
+        tokens = [self.lemmatizer.lemmatize(word) for word in tokens]
+        
+        # Stemming
+        tokens = [self.stemmer.stem(word) for word in tokens]
+        
+        return ' '.join(tokens)
+    
+    def extract_features(self, texts, vectorization='tfidf', max_features=1000):
+        """Metin özellik çıkarımı"""
+        if vectorization == 'tfidf':
+            self.vectorizer = TfidfVectorizer(
+                max_features=max_features,
+                ngram_range=(1, 2),  # unigrams ve bigrams
+                min_df=2,
+                max_df=0.95
+            )
+        elif vectorization == 'count':
+            self.vectorizer = CountVectorizer(
+                max_features=max_features,
+                ngram_range=(1, 2),
+                min_df=2,
+                max_df=0.95
+            )
+        elif vectorization == 'hash':
+            self.vectorizer = HashingVectorizer(
+                n_features=max_features,
+                ngram_range=(1, 2),
+                alternate_sign=False
+            )
+        
+        X = self.vectorizer.fit_transform(texts)
+        return X
+    
+    def topic_modeling(self, texts, n_topics=10, method='lda'):
+        """Konu modelleme"""
+        # Ön işleme
+        processed_texts = [self.preprocess_text(text) for text in texts]
+        
+        # Vektörleştirme
+        X = self.extract_features(processed_texts, max_features=2000)
+        
+        if method == 'lda':
+            self.topic_model = LatentDirichletAllocation(
+                n_components=n_topics,
+                random_state=42,
+                learning_method='online',
+                max_iter=50
+            )
+        elif method == 'nmf':
+            self.topic_model = NMF(
+                n_components=n_topics,
+                random_state=42,
+                max_iter=500
+            )
+        elif method == 'lsa':
+            self.topic_model = TruncatedSVD(
+                n_components=n_topics,
+                random_state=42
+            )
+        
+        # Modeli eğit
+        topic_matrix = self.topic_model.fit_transform(X)
+        
+        # Konuları etiketle
+        topics = self.label_topics(self.vectorizer, self.topic_model, n_topics)
+        
+        # Her metin için ana konuyu belirle
+        dominant_topics = np.argmax(topic_matrix, axis=1)
+        
+        return {
+            'topics': topics,
+            'dominant_topics': dominant_topics,
+            'topic_matrix': topic_matrix
+        }
+    
+    def label_topics(self, vectorizer, model, n_topics, n_words=10):
+        """Konuları etiketleme"""
+        feature_names = vectorizer.get_feature_names_out()
+        topics = []
+        
+        for topic_idx, topic in enumerate(model.components_):
+            top_words = [feature_names[i] for i in topic.argsort()[:-n_words-1:-1]]
+            topics.append({
+                'topic_id': topic_idx,
+                'words': top_words,
+                'label': ' '.join(top_words[:3])  # İlk 3 kelimeyi etiket olarak kullan
+            })
+        
+        return topics
+    
+    def sentiment_analysis(self, texts):
+        """Duygu analizi"""
+        sentiments = []
+        
+        for text in texts:
+            # TextBlob ile duygu analizi
+            blob = TextBlob(text)
+            polarity = blob.sentiment.polarity
+            subjectivity = blob.sentiment.subjectivity
+            
+            # Kategori belirleme
+            if polarity > 0.1:
+                sentiment = 'positive'
+            elif polarity < -0.1:
+                sentiment = 'negative'
+            else:
+                sentiment = 'neutral'
+            
+            # Ek metrikler
+            doc = self.nlp(text)
+            entities = [(ent.text, ent.label_) for ent in doc.ents]
+            
+            sentiments.append({
+                'text': text,
+                'polarity': polarity,
+                'subjectivity': subjectivity,
+                'sentiment': sentiment,
+                'entities': entities,
+                'word_count': len(text.split()),
+                'sentence_count': len(sent_tokenize(text)),
+                'avg_word_length': np.mean([len(word) for word in text.split()]) if text.split() else 0
+            })
+        
+        return pd.DataFrame(sentiments)
+    
+    def readability_analysis(self, texts):
+        """Okunabilirlik analizi"""
+        readability_scores = []
+        
+        for text in texts:
+            words = text.split()
+            sentences = sent_tokenize(text)
+            
+            if len(words) == 0 or len(sentences) == 0:
+                readability_scores.append({
+                    'flesch_reading_ease': 0,
+                    'flesch_kincaid_grade': 0,
+                    'gunning_fog': 0,
+                    'smog_index': 0,
+                    'ari': 0,
+                    'coleman_liau': 0
+                })
+                continue
+            
+            # Flesch Reading Ease
+            total_words = len(words)
+            total_sentences = len(sentences)
+            total_syllables = sum([self.count_syllables(word) for word in words])
+            
+            flesch = 206.835 - 1.015 * (total_words / total_sentences) - 84.6 * (total_syllables / total_words)
+            
+            # Flesch-Kincaid Grade Level
+            fk_grade = 0.39 * (total_words / total_sentences) + 11.8 * (total_syllables / total_words) - 15.59
+            
+            # Gunning Fog Index
+            complex_words = sum([1 for word in words if self.count_syllables(word) >= 3])
+            fog_index = 0.4 * ((total_words / total_sentences) + 100 * (complex_words / total_words))
+            
+            # SMOG Index
+            smog = 1.0430 * np.sqrt(complex_words * (30 / total_sentences)) + 3.1291
+            
+            # Automated Readability Index (ARI)
+            characters = len(text.replace(' ', ''))
+            ari = 4.71 * (characters / total_words) + 0.5 * (total_words / total_sentences) - 21.43
+            
+            # Coleman-Liau Index
+            coleman = 0.0588 * (characters / total_words * 100) - 0.296 * (total_sentences / total_words * 100) - 15.8
+            
+            readability_scores.append({
+                'flesch_reading_ease': flesch,
+                'flesch_kincaid_grade': fk_grade,
+                'gunning_fog': fog_index,
+                'smog_index': smog,
+                'ari': ari,
+                'coleman_liau': coleman
+            })
+        
+        return pd.DataFrame(readability_scores)
+    
+    def count_syllables(self, word):
+        """Hece sayma"""
+        word = word.lower()
+        count = 0
+        vowels = 'aeiouy'
+        
+        if word[0] in vowels:
+            count += 1
+        
+        for i in range(1, len(word)):
+            if word[i] in vowels and word[i-1] not in vowels:
+                count += 1
+        
+        if word.endswith('e'):
+            count -= 1
+        
+        if word.endswith('le') and len(word) > 2 and word[-3] not in vowels:
+            count += 1
+        
+        if count == 0:
+            count = 1
+        
+        return count
+    
+    def content_clustering(self, texts, n_clusters=5, method='kmeans'):
+        """İçerik kümeleme"""
+        # Özellik çıkarımı
+        X = self.extract_features(texts, max_features=1000)
+        
+        if method == 'kmeans':
+            self.cluster_model = KMeans(
+                n_clusters=n_clusters,
+                random_state=42,
+                n_init=10
+            )
+        elif method == 'agglomerative':
+            self.cluster_model = AgglomerativeClustering(
+                n_clusters=n_clusters,
+                linkage='ward'
+            )
+        elif method == 'dbscan':
+            self.cluster_model = DBSCAN(
+                eps=0.5,
+                min_samples=5
+            )
+        
+        # Kümeleme
+        labels = self.cluster_model.fit_predict(X.toarray())
+        
+        # Küme kalitesi değerlendirme
+        if method != 'dbscan':
+            silhouette = silhouette_score(X, labels) if len(set(labels)) > 1 else -1
+            calinski = calinski_harabasz_score(X.toarray(), labels) if len(set(labels)) > 1 else -1
+        else:
+            silhouette = -1
+            calinski = -1
+        
+        # Boyut indirgeme (görselleştirme için)
+        tsne = TSNE(n_components=2, random_state=42)
+        X_embedded = tsne.fit_transform(X.toarray())
+        
+        return {
+            'labels': labels,
+            'silhouette_score': silhouette,
+            'calinski_harabasz_score': calinski,
+            'embedded_features': X_embedded,
+            'cluster_sizes': pd.Series(labels).value_counts().to_dict()
+        }
+    
+    def keyword_analysis(self, texts, top_n=20):
+        """Anahtar kelime analizi"""
+        # TF-IDF skorları
+        X = self.extract_features(texts, max_features=500)
+        feature_names = self.vectorizer.get_feature_names_out()
+        
+        # Ortalama TF-IDF skorları
+        tfidf_scores = np.array(X.mean(axis=0)).flatten()
+        
+        # En önemli kelimeler
+        top_indices = tfidf_scores.argsort()[-top_n:][::-1]
+        keywords = [(feature_names[i], tfidf_scores[i]) for i in top_indices]
+        
+        # N-gram analizi
+        ngram_analyzer = CountVectorizer(ngram_range=(2, 3), max_features=20)
+        ngram_matrix = ngram_analyzer.fit_transform(texts)
+        ngram_features = ngram_analyzer.get_feature_names_out()
+        ngram_scores = np.array(ngram_matrix.sum(axis=0)).flatten()
+        
+        top_ngrams = [(ngram_features[i], ngram_scores[i]) 
+                     for i in ngram_scores.argsort()[-10:][::-1]]
+        
+        return {
+            'keywords': keywords,
+            'bigrams_trigrams': top_ngrams,
+            'total_unique_words': len(feature_names),
+            'avg_words_per_doc': np.mean([len(text.split()) for text in texts])
+        }
+    
+    def content_optimization_score(self, text):
+        """İçerik optimizasyon skoru"""
+        # Duygu analizi
+        sentiment = TextBlob(text).sentiment
+        
+        # Okunabilirlik
+        readability = self.readability_analysis([text]).iloc[0]
+        
+        # Dil kalitesi
+        doc = self.nlp(text)
+        
+        # Skor hesaplama
+        score = 0
+        
+        # 1. Duygu pozitifliği (%30)
+        sentiment_score = (sentiment.polarity + 1) / 2  # 0-1 arası
+        score += sentiment_score * 0.3
+        
+        # 2. Okunabilirlik (%30)
+        if readability['flesch_reading_ease'] > 60:  # Kolay okunabilir
+            readability_score = 1.0
+        elif readability['flesch_reading_ease'] > 30:  # Orta düzey
+            readability_score = 0.7
+        else:  # Zor
+            readability_score = 0.3
+        score += readability_score * 0.3
+        
+        # 3. Dil çeşitliliği (%20)
+        words = text.split()
+        unique_words = set(words)
+        diversity_score = len(unique_words) / len(words) if words else 0
+        score += diversity_score * 0.2
+        
+        # 4. Dilbilgisi doğruluğı (%20) - basitleştirilmiş
+        # Uzun cümleleri kontrol et
+        sentences = sent_tokenize(text)
+        avg_sentence_length = np.mean([len(sent.split()) for sent in sentences]) if sentences else 0
+        if avg_sentence_length > 30:
+            grammar_score = 0.5
+        elif avg_sentence_length > 20:
+            grammar_score = 0.7
+        else:
+            grammar_score = 1.0
+        score += grammar_score * 0.2
+        
+        # Öneriler
+        recommendations = []
+        if sentiment.polarity < 0:
+            recommendations.append("Daha pozitif bir dil kullanın")
+        if readability['flesch_reading_ease'] < 60:
+            recommendations.append("Daha kısa cümleler kullanarak okunabilirliği artırın")
+        if diversity_score < 0.5:
+            recommendations.append("Kelime çeşitliliğini artırın")
+        if avg_sentence_length > 25:
+            recommendations.append("Çok uzun cümleleri bölün")
+        
+        return {
+            'overall_score': score * 100,  # Yüzdelik
+            'sentiment_score': sentiment_score * 100,
+            'readability_score': readability_score * 100,
+            'diversity_score': diversity_score * 100,
+            'grammar_score': grammar_score * 100,
+            'recommendations': recommendations,
+            'grade': 'A' if score > 0.8 else 'B' if score > 0.6 else 'C' if score > 0.4 else 'D'
+        }
+    
+    def generate_content_brief(self, topic, target_audience='general'):
+        """İçerik briefi oluşturma"""
+        # Anahtar kelimeler
+        keywords = self.extract_keywords_from_topic(topic)
+        
+        # Hedef kitleye göre optimizasyon
+        audience_profiles = {
+            'general': {
+                'reading_level': '8th grade',
+                'preferred_length': 500-1000,
+                'tone': 'informative',
+                'complexity': 'medium'
+            },
+            'technical': {
+                'reading_level': 'college',
+                'preferred_length': 1000-2000,
+                'tone': 'professional',
+                'complexity': 'high'
+            },
+            'beginners': {
+                'reading_level': '5th grade',
+                'preferred_length': 300-800,
+                'tone': 'friendly',
+                'complexity': 'low'
+            }
+        }
+        
+        profile = audience_profiles.get(target_audience, audience_profiles['general'])
+        
+        # Yapı önerisi
+        structure = self.suggest_content_structure(topic, profile)
+        
+        # SEO önerileri
+        seo_recommendations = self.generate_seo_recommendations(topic, keywords)
+        
+        return {
+            'topic': topic,
+            'target_audience': target_audience,
+            'audience_profile': profile,
+            'keywords': keywords,
+            'structure': structure,
+            'seo_recommendations': seo_recommendations,
+            'estimated_reading_time': profile['preferred_length'] / 200,  # dakika
+            'word_count_target': f"{profile['preferred_length']} kelime"
+        }
+    
+    def extract_keywords_from_topic(self, topic):
+        """Konudan anahtar kelimeler çıkarma"""
+        words = topic.lower().split()
+        filtered_words = [word for word in words if len(word) > 3]
+        
+        # İlgili kelimeler ekle
+        related_words = {
+            'ai': ['artificial intelligence', 'machine learning', 'neural networks'],
+            'finance': ['investment', 'trading', 'stock market', 'portfolio'],
+            'technology': ['innovation', 'digital', 'software', 'hardware']
+        }
+        
+        keywords = set(filtered_words)
+        for word in filtered_words:
+            if word in related_words:
+                keywords.update(related_words[word])
+        
+        return list(keywords)[:10]
+    
+    def suggest_content_structure(self, topic, profile):
+        """İçerik yapısı önerisi"""
+        structures = {
+            'general': [
+                {'type': 'introduction', 'purpose': 'Konuyu tanıt ve okuyucunun ilgisini çek'},
+                {'type': 'problem', 'purpose': 'Sorunu veya ihtiyacı tanımla'},
+                {'type': 'solution', 'purpose': 'Çözümü veya yaklaşımı açıkla'},
+                {'type': 'benefits', 'purpose': 'Faydaları liste'},
+                {'type': 'conclusion', 'purpose': 'Özetle ve harekete geçirici ifade ekle'}
+            ],
+            'technical': [
+                {'type': 'abstract', 'purpose': 'Kısa özet'},
+                {'type': 'introduction', 'purpose': 'Arka plan ve motivasyon'},
+                {'type': 'methodology', 'purpose': 'Yöntem ve yaklaşım'},
+                {'type': 'results', 'purpose': 'Bulgular ve sonuçlar'},
+                {'type': 'discussion', 'purpose': 'Analiz ve yorum'},
+                {'type': 'conclusion', 'purpose': 'Sonuç ve öneriler'}
+            ]
+        }
+        
+        return structures.get(profile['complexity'], structures['general'])
+    
+    def generate_seo_recommendations(self, topic, keywords):
+        """SEO önerileri"""
+        return {
+            'meta_title': f"{topic} | Kapsamlı Rehber",
+            'meta_description': f"{topic} hakkında detaylı bilgi. {', '.join(keywords[:3])} konularında uzman rehber.",
+            'focus_keyword': keywords[0] if keywords else topic.split()[0],
+            'url_structure': f"/blog/{'-'.join(topic.lower().split())}",
+            'internal_links': ['/blog', '/kaynaklar', '/referanslar'],
+            'external_links': 3,
+            'image_alt_texts': [f"{topic} görseli", f"{keywords[0]} diyagramı"]
+        }
+
+# Kullanım örneği
+if __name__ == "__main__":
+    # Örnek içerikler
+    sample_texts = [
+        "Artificial intelligence is transforming the financial industry through predictive analytics and automated trading systems.",
+        "Machine learning algorithms can analyze vast amounts of data to identify market trends and make investment recommendations.",
+        "Deep learning models, particularly neural networks, have shown remarkable success in predicting stock prices and market movements.",
+        "Natural language processing enables sentiment analysis of financial news and social media to gauge market sentiment.",
+        "Blockchain technology is revolutionizing financial transactions through decentralized and secure ledgers.",
+        "Robo-advisors use AI algorithms to provide automated, personalized investment advice at lower costs than traditional advisors.",
+        "Risk management in finance has been enhanced by AI systems that can predict and mitigate potential financial crises.",
+        "Algorithmic trading uses complex AI models to execute trades at optimal times, maximizing profits and minimizing risks."
+    ]
+    
+    # İçerik optimizasyon ML
+    content_ml = ContentOptimizationML()
+    
+    # Duygu analizi
+    sentiment_results = content_ml.sentiment_analysis(sample_texts)
+    print("Duygu analizi sonuçları:")
+    print(sentiment_results[['text', 'sentiment', 'polarity']].head())
+    
+    # Okunabilirlik analizi
+    readability_results = content_ml.readability_analysis(sample_texts)
+    print("\nOkunabilirlik skorları:")
+    print(readability_results.head())
+    
+    # Anahtar kelime analizi
+    keyword_results = content_ml.keyword_analysis(sample_texts, top_n=10)
+    print("\nAnahtar kelimeler:")
+    for keyword, score in keyword_results['keywords']:
+        print(f"{keyword}: {score:.4f}")
+    
+    # Konu modelleme
+    topic_results = content_ml.topic_modeling(sample_texts, n_topics=3, method='lda')
+    print("\nTespit edilen konular:")
+    for topic in topic_results['topics']:
+        print(f"Konu {topic['topic_id']}: {topic['label']}")
+    
+    # İçerik optimizasyon skoru
+    for i, text in enumerate(sample_texts[:3]):
+        score = content_ml.content_optimization_score(text)
+        print(f"\nMetin {i+1} Optimizasyon Skoru: {score['overall_score']:.1f} ({score['grade']})")
+        print(f"Öneriler: {', '.join(score['recommendations'])}")
+    
+    # İçerik briefi oluşturma
+    brief = content_ml.generate_content_brief(
+        topic="Yapay Zeka ile Finansal Tahmin",
+        target_audience="technical"
+    )
+    print(f"\nİçerik Briefi:")
+    print(f"Konu: {brief['topic']}")
+    print(f"Hedef Kitle: {brief['target_audience']}")
+    print(f"Anahtar Kelimeler: {', '.join(brief['keywords'][:5])}")
+3. Tasarım Optimizasyonu için ML Modelleri
+python
+# muco_design_ml.py
+import numpy as np
+import pandas as pd
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.metrics import silhouette_score, davies_bouldin_score
+from sklearn.ensemble import IsolationForest
+import cv2
+from PIL import Image
+import colorsys
+from collections import Counter
+import webcolors
+import json
+
+class DesignOptimizationML:
+    def __init__(self):
+        self.color_clusters = None
+        self.design_patterns = None
+        
+    def extract_color_features(self, image_path, n_colors=10):
+        """Renk özellikleri çıkarımı"""
+        # Görüntüyü yükle
+        image = cv2.imread(image_path)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Pikselleri yeniden şekillendir
+        pixels = image.reshape(-1, 3)
+        
+        # K-means ile renk kümeleme
+        kmeans = KMeans(n_clusters=n_colors, random_state=42, n_init=10)
+        kmeans.fit(pixels)
+        
+        # Renk kümeleri
+        colors = kmeans.cluster_centers_.astype(int)
+        labels = kmeans.labels_
+        
+        # Renk dağılımı
+        color_distribution = np.bincount(labels) / len(labels)
+        
+        # Renk isimleri
+        color_names = [self.get_color_name(color) for color in colors]
+        
+        # Renk özellikleri
+        color_features = []
+        for i, (color, dist) in enumerate(zip(colors, color_distribution)):
+            r, g, b = color
+            h, s, v = colorsys.rgb_to_hsv(r/255, g/255, b/255)
+            
+            color_features.append({
+                'color_id': i,
+                'rgb': color.tolist(),
+                'hex': self.rgb_to_hex(color),
+                'name': color_names[i],
+                'percentage': float(dist * 100),
+                'hsv': [h, s, v],
+                'is_primary': self.is_primary_color(color),
+                'is_warm': self.is_warm_color(color),
+                'luminance': self.calculate_luminance(color)
+            })
+        
+        # Sırala (en çok kullanılandan en aza)
+        color_features.sort(key=lambda x: x['percentage'], reverse=True)
+        
+        # Renk harmoni skoru
+        harmony_score = self.calculate_color_harmony(color_features)
+        
+        return {
+            'colors': color_features,
+            'harmony_score': harmony_score,
+            'dominant_color': color_features[0],
+            'color_palette': [cf['hex'] for cf in color_features[:5]],
+            'kmeans_model': kmeans
+        }
+    
+    def get_color_name(self, rgb_color):
+        """RGB rengini isimlendirme"""
+        try:
+            color_name = webcolors.rgb_to_name(rgb_color)
+        except ValueError:
+            # En yakın rengi bul
+            min_colors = {}
+            for hex_code, name in webcolors.CSS3_HEX_TO_NAMES.items():
+                r_c, g_c, b_c = webcolors.hex_to_rgb(hex_code)
+                rd = (r_c - rgb_color[0]) ** 2
+                gd = (g_c - rgb_color[1]) ** 2
+                bd = (b_c - rgb_color[2]) ** 2
+                min_colors[(rd + gd + bd)] = name
+            color_name = min_colors[min(min_colors.keys())]
+        
+        return color_name
+    
+    def rgb_to_hex(self, rgb_color):
+        """RGB'den HEX'e dönüşüm"""
+        return '#{:02x}{:02x}{:02x}'.format(*rgb_color)
+    
+    def is_primary_color(self, rgb_color):
+        """Ana renk kontrolü"""
+        primary_colors = [
+            [255, 0, 0],    # Red
+            [0, 255, 0],    # Green
+            [0, 0, 255],    # Blue
+            [255, 255, 0],  # Yellow
+            [0, 255, 255],  # Cyan
+            [255, 0, 255]   # Magenta
+        ]
+        
+        for primary in primary_colors:
+            if np.linalg.norm(rgb_color - primary) < 50:
+                return True
+        return False
+    
+    def is_warm_color(self, rgb_color):
+        """Sıcak renk kontrolü"""
+        r, g, b = rgb_color
+        # Sıcak renkler: kırmızı, turuncu, sarı
+        return r > 150 and g < 200 and b < 200
+    
+    def calculate_luminance(self, rgb_color):
+        """Renk parlaklığı"""
+        r, g, b = rgb_color
+        return 0.299 * r + 0.587 * g + 0.114 * b
+    
+    def calculate_color_harmony(self, color_features):
+        """Renk harmoni skoru"""
+        if len(color_features) < 2:
+            return 0
+        
+        # HSV değerlerini al
+        h_values = [cf['hsv'][0] for cf in color_features[:5]]
+        
+        # Renk çeşitliliği (0-1 arası)
+        hue_diversity = len(set(np.round(h_values, 1))) / 5
+        
+        # Parçalılık (contrast) - HSV'deki farklılık
+        hue_contrast = np.std(h_values) / 0.2887  # Normalize
+        
+        # Doygunluk ortalaması
+        avg_saturation = np.mean([cf['hsv'][1] for cf in color_features[:5]])
+        
+        # Parlaklık dengesi
+        luminance_values = [cf['luminance'] for cf in color_features[:5]]
+        luminance_balance = 1 - (np.std(luminance_values) / 255)
+        
+        # Harmoni skoru
+        harmony_score = (
+            0.3 * hue_diversity +
+            0.3 * min(hue_contrast, 1.0) +
+            0.2 * avg_saturation +
+            0.2 * luminance_balance
+        ) * 100
+        
+        return harmony_score
+    
+    def analyze_design_patterns(self, design_elements):
+        """Tasarım örüntüleri analizi"""
+        # Tasarım özelliklerini çıkar
+        features = []
+        
+        for element in design_elements:
+            feat = {
+                'element_type': element.get('type', 'unknown'),
+                'color_count': len(element.get('colors', [])),
+                'symmetry_score': element.get('symmetry', 0.5),
+                'complexity': element.get('complexity', 0.5),
+                'balance': element.get('balance', 0.5),
+                'contrast': element.get('contrast', 0.5),
+                'alignment': element.get('alignment', 0.5),
+                'proximity': element.get('proximity', 0.5)
+            }
+            
+            # Renk özellikleri ekle
+            if 'colors' in element:
+                colors = element['colors']
+                feat['avg_hue'] = np.mean([c['hsv'][0] for c in colors[:3]]) if colors else 0
+                feat['avg_saturation'] = np.mean([c['hsv'][1] for c in colors[:3]]) if colors else 0
+                feat['avg_value'] = np.mean([c['hsv'][2] for c in colors[:3]]) if colors else 0
+            
+            features.append(feat)
+        
+        # DataFrame oluştur
+        df = pd.DataFrame(features)
+        
+        # Numeric özellikler
+        numeric_cols = [col for col in df.columns if col not in ['element_type']]
+        X = df[numeric_cols].values
+        
+        # Ölçekleme
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        # Kümeleme
+        n_clusters = min(5, len(features))
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        clusters = kmeans.fit_predict(X_scaled)
+        
+        # Küme analizi
+        cluster_analysis = []
+        for cluster_id in range(n_clusters):
+            cluster_elements = df[clusters == cluster_id]
+            cluster_analysis.append({
+                'cluster_id': cluster_id,
+                'size': len(cluster_elements),
+                'centroid': kmeans.cluster_centers_[cluster_id].tolist(),
+                'elements': cluster_elements['element_type'].tolist(),
+                'avg_complexity': cluster_elements['complexity'].mean(),
+                'avg_balance': cluster_elements['balance'].mean(),
+                'avg_contrast': cluster_elements['contrast'].mean()
+            })
+        
+        # Kalite metrikleri
+        if len(set(clusters)) > 1:
+            silhouette = silhouette_score(X_scaled, clusters)
+            davies_bouldin = davies_bouldin_score(X_scaled, clusters)
+        else:
+            silhouette = -1
+            davies_bouldin = float('inf')
+        
+        return {
+            'clusters': cluster_analysis,
+            'silhouette_score': silhouette,
+            'davies_bouldin_score': davies_bouldin,
+            'cluster_labels': clusters.tolist(),
+            'design_patterns': self.extract_design_patterns(cluster_analysis)
+        }
+    
+    def extract_design_patterns(self, cluster_analysis):
+        """Tasarım örüntülerini çıkar"""
+        patterns = []
+        
+        for cluster in cluster_analysis:
+            pattern_type = self.classify_design_pattern(cluster)
+            patterns.append({
+                'pattern_id': cluster['cluster_id'],
+                'pattern_type': pattern_type,
+                'description': self.get_pattern_description(pattern_type),
+                'recommendations': self.get_pattern_recommendations(pattern_type),
+                'applications': self.get_pattern_applications(pattern_type),
+                'prevalence': cluster['size'],
+                'characteristics': {
+                    'complexity': cluster['avg_complexity'],
+                    'balance': cluster['avg_balance'],
+                    'contrast': cluster['avg_contrast']
+                }
+            })
+        
+        return patterns
+    
+    def classify_design_pattern(self, cluster):
+        """Tasarım örüntüsünü sınıflandır"""
+        complexity = cluster['avg_complexity']
+        balance = cluster['avg_balance']
+        contrast = cluster['avg_contrast']
+        
+        if complexity > 0.7:
+            if contrast > 0.6:
+                return "bold_contrast"
+            else:
+                return "complex_detailed"
+        elif balance > 0.7:
+            if contrast < 0.4:
+                return "minimal_balanced"
+            else:
+                return "balanced_contrast"
+        elif contrast > 0.7:
+            return "high_contrast"
+        else:
+            return "simple_neutral"
+    
+    def get_pattern_description(self, pattern_type):
+        """Örüntü açıklaması"""
+        descriptions = {
+            "bold_contrast": "Cesur kontrastlı, karmaşık tasarım",
+            "complex_detailed": "Detaylı ve karmaşık tasarım",
+            "minimal_balanced": "Minimal ve dengeli tasarım",
+            "balanced_contrast": "Dengeli kontrastlı tasarım",
+            "high_contrast": "Yüksek kontrastlı tasarım",
+            "simple_neutral": "Basit ve nötr tasarım"
+        }
+        return descriptions.get(pattern_type, "Belirsiz tasarım örüntüsü")
+    
+    def get_pattern_recommendations(self, pattern_type):
+        """Örüntüye göre öneriler"""
+        recommendations = {
+            "bold_contrast": [
+                "Güçlü markalar için uygundur",
+                "Dikkat çekmek istediğinizde kullanın",
+                "Genç hedef kitleye hitap eder"
+            ],
+            "complex_detailed": [
+                "Lüks markalar için uygundur",
+                "Detay önemli olduğunda kullanın",
+                "Yüksek kalite algısı oluşturur"
+            ],
+            "minimal_balanced": [
+                "Teknoloji şirketleri için ideal",
+                "Modern ve temiz görünüm",
+                "Okunabilirliği yüksek"
+            ],
+            "balanced_contrast": [
+                "Çok yönlü kullanım",
+                "Profesyonel görünüm",
+                "Çoğu sektör için uygun"
+            ],
+            "high_contrast": [
+                "Erişilebilirlik önemli olduğunda",
+                "Okunabilirliği maksimize eder",
+                "Dikkat çekici başlıklar için"
+            ],
+            "simple_neutral": [
+                "Güven veren tasarım",
+                "Muhafazakar sektörler için",
+                "Sadeliği ön planda"
+            ]
+        }
+        return recommendations.get(pattern_type, [])
+    
+    def get_pattern_applications(self, pattern_type):
+        """Örüntü uygulama alanları"""
+        applications = {
+            "bold_contrast": ["Moda", "Eğlence", "Spor", "Gençlik markaları"],
+            "complex_detailed": ["Lüks ürünler", "Sanat", "Müzeler", "Premium hizmetler"],
+            "minimal_balanced": ["Teknoloji", "Finans", "Sağlık", "Profesyonel hizmetler"],
+            "balanced_contrast": ["E-ticaret", "Eğitim", "Yayıncılık", "Danışmanlık"],
+            "high_contrast": ["Kamu hizmetleri", "Erişilebilirlik", "Eğitim materyalleri"],
+            "simple_neutral": ["Bankacılık", "Sigorta", "Hukuk", "Kamu kurumları"]
+        }
+        return applications.get(pattern_type, [])
+    
+    def generate_color_palette(self, base_color, palette_type='analogous', n_colors=5):
+        """Renk paleti oluşturma"""
+        base_rgb = np.array(base_color)
+        base_hsv = colorsys.rgb_to_hsv(base_rgb[0]/255, base_rgb[1]/255, base_rgb[2]/255)
+        
+        palettes = []
+        
+        if palette_type == 'analogous':
+            # Benzer renkler (HSV'de ±30 derece)
+            for i in range(n_colors):
+                hue = (base_hsv[0] + (i - n_colors//2) * 0.0833) % 1.0  # 30 derece = 0.0833
+                rgb = colorsys.hsv_to_rgb(hue, base_hsv[1], base_hsv[2])
+                palettes.append([int(c * 255) for c in rgb])
+        
+        elif palette_type == 'complementary':
+            # Tamamlayıcı renkler
+            complementary_hue = (base_hsv[0] + 0.5) % 1.0
+            for i in range(n_colors):
+                if i % 2 == 0:
+                    rgb = colorsys.hsv_to_rgb(base_hsv[0], base_hsv[1], base_hsv[2])
+                else:
+                    rgb = colorsys.hsv_to_rgb(complementary_hue, base_hsv[1], base_hsv[2])
+                palettes.append([int(c * 255) for c in rgb])
+        
+        elif palette_type == 'triadic':
+            # Üçlü renkler
+            hues = [base_hsv[0], (base_hsv[0] + 0.333) % 1.0, (base_hsv[0] + 0.666) % 1.0]
+            for i in range(n_colors):
+                hue = hues[i % len(hues)]
+                rgb = colorsys.hsv_to_rgb(hue, base_hsv[1], base_hsv[2])
+                palettes.append([int(c * 255) for c in rgb])
+        
+        elif palette_type == 'monochromatic':
+            # Tek renk tonları
+            for i in range(n_colors):
+                value = 0.3 + (i / (n_colors - 1)) * 0.5 if n_colors > 1 else 0.5
+                rgb = colorsys.hsv_to_rgb(base_hsv[0], base_hsv[1], value)
+                palettes.append([int(c * 255) for c in rgb])
+        
+        # HEX kodlarına çevir
+        hex_palette = [self.rgb_to_hex(color) for color in palettes]
+        
+        return {
+            'type': palette_type,
+            'base_color': base_rgb.tolist(),
+            'hex_base': self.rgb_to_hex(base_rgb),
+            'palette': hex_palette,
+            'harmony_score': self.calculate_palette_harmony(palettes)
+        }
+    
+    def calculate_palette_harmony(self, palette):
+        """Renk paleti harmoni skoru"""
+        if len(palette) < 2:
+            return 0
+        
+        # HSV değerlerini hesapla
+        hsv_values = [colorsys.rgb_to_hsv(r/255, g/255, b/255) for r, g, b in palette]
+        
+        # Renk çeşitliliği
+        hues = [h for h, s, v in hsv_values]
+        hue_diversity = len(set(np.round(hues, 2))) / len(palette)
+        
+        # Doygunluk dengesi
+        saturations = [s for h, s, v in hsv_values]
+        saturation_balance = 1 - np.std(saturations)
+        
+        # Parlaklık dengesi
+        values = [v for h, s, v in hsv_values]
+        value_balance = 1 - np.std(values)
+        
+        # Harmoni skoru
+        harmony_score = (
+            0.4 * hue_diversity +
+            0.3 * saturation_balance +
+            0.3 * value_balance
+        ) * 100
+        
+        return harmony_score
+    
+    def optimize_logo_design(self, company_info):
+        """Logo tasarımı optimizasyonu"""
+        sector = company_info.get('sector', 'technology')
+        company_name = company_info.get('name', 'Company')
+        values = company_info.get('values', ['innovation', 'trust'])
+        
+        # Sektöre göre renk paleti
+        sector_colors = {
+            'technology': ['#2563eb', '#3b82f6', '#60a5fa'],  # Mavi tonları
+            'finance': ['#059669', '#10b981', '#34d399'],     # Yeşil tonları
+            'health': ['#dc2626', '#ef4444', '#f87171'],      # Kırmızı tonları
+            'education': ['#7c3aed', '#8b5cf6', '#a78bfa'],   # Mor tonları
+            'retail': ['#ea580c', '#f97316', '#fb923c'],      # Turuncu tonları
+            'creative': ['#db2777', '#ec4899', '#f472b6']     # Pembe tonları
+        }
+        
+        base_color = sector_colors.get(sector, sector_colors['technology'])[0]
+        
+        # Değerlere göre tasarım stili
+        style_scores = {
+            'minimal': 0,
+            'modern': 0,
+            'classic': 0,
+            'playful': 0,
+            'luxury': 0
+        }
+        
+        value_mapping = {
+            'innovation': ['modern', 'minimal'],
+            'trust': ['classic', 'minimal'],
+            'quality': ['luxury', 'classic'],
+            'creativity': ['playful', 'modern'],
+            'reliability': ['classic', 'minimal']
+        }
+        
+        for value in values:
+            for style in value_mapping.get(value, []):
+                style_scores[style] += 1
+        
+        # En yüksek skorlu stil
+        recommended_style = max(style_scores, key=style_scores.get)
+        
+        # Logo tipi önerisi
+        logo_types = {
+            'minimal': ['wordmark', 'lettermark', 'abstract'],
+            'modern': ['abstract', 'combination', 'emblem'],
+            'classic': ['emblem', 'combination', 'mascot'],
+            'playful': ['mascot', 'combination', 'illustrative'],
+            'luxury': ['emblem', 'lettermark', 'wordmark']
+        }
+        
+        # Font önerileri
+        font_recommendations = {
+            'minimal': ['Inter', 'Roboto', 'Helvetica Neue', 'Avenir'],
+            'modern': ['Montserrat', 'Open Sans', 'Lato', 'Poppins'],
+            'classic': ['Times New Roman', 'Georgia', 'Garamond', 'Baskerville'],
+            'playful': ['Comic Sans MS', 'Fredoka One', 'Pacifico', 'Indie Flower'],
+            'luxury': ['Playfair Display', 'Cormorant', 'Cinzel', 'Marcellus']
+        }
+        
+        return {
+            'company_name': company_name,
+            'sector': sector,
+            'recommended_style': recommended_style,
+            'color_palette': self.generate_color_palette(
+                base_color=self.hex_to_rgb(base_color),
+                palette_type='analogous'
+            ),
+            'logo_type_suggestions': logo_types[recommended_style],
+            'font_suggestions': font_recommendations[recommended_style][:3],
+            'design_principles': self.get_design_principles(recommended_style),
+            'layout_suggestions': self.get_layout_suggestions(recommended_style)
+        }
+    
+    def hex_to_rgb(self, hex_color):
+        """HEX'ten RGB'ye dönüşüm"""
+        hex_color = hex_color.lstrip('#')
+        return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    
+    def get_design_principles(self, style):
+        """Tasarım prensipleri"""
+        principles = {
+            'minimal': [
+                'Az ama öz kullan',
+                'Negatif alanı etkili kullan',
+                'Basit geometrik şekiller',
+                'Sınırlı renk paleti'
+            ],
+            'modern': [
+                'Temiz hatlar',
+                'Dengeli boşluk',
+                'Modern tipografi',
+                'Kontrastlı renkler'
+            ],
+            'classic': [
+                'Simetri',
+                'Geleneksel öğeler',
+                'Okunabilir fontlar',
+                'Sofistike renkler'
+            ],
+            'playful': [
+                'Eğlenceli şekiller',
+                'Canlı renkler',
+                'Dinamik kompozisyon',
+                'Eğlenceli tipografi'
+            ],
+            'luxury': [
+                'Detaylı işçilik',
+                'Altın veya gümüş tonları',
+                'Klasik tipografi',
+                'Simetri ve denge'
+            ]
+        }
+        return principles.get(style, [])
+    
+    def get_layout_suggestions(self, style):
+        """Layout önerileri"""
+        layouts = {
+            'minimal': [
+                {'name': 'Merkezi', 'description': 'Logo ortada, minimal boşluklar'},
+                {'name': 'Sol Üst', 'description': 'Logo sol üstte, metin sağda'}
+            ],
+            'modern': [
+                {'name': 'Asimetrik', 'description': 'Dinamik asimetrik düzen'},
+                {'name': 'Kılavuzlu', 'description': 'Izgara sistemine dayalı'}
+            ],
+            'classic': [
+                {'name': 'Simetrik', 'description': 'Tam simetrik düzen'},
+                {'name': 'Merkezi', 'description': 'Klasik merkezi kompozisyon'}
+            ],
+            'playful': [
+                {'name': 'Dinamik', 'description': 'Hareketli, enerjik düzen'},
+                {'name': 'Dağınık', 'description': 'Kasıtlı dağınık görünüm'}
+            ],
+            'luxury': [
+                {'name': 'Merkezi', 'description': 'Merkezi, dengeli düzen'},
+                {'name': 'Köşeli', 'description': 'Köşelerde vurgulu düzen'}
+            ]
+        }
+        return layouts.get(style, [])
+
+# Kullanım örneği
+if __name__ == "__main__":
+    # Tasarım ML modeli
+    design_ml = DesignOptimizationML()
+    
+    # Renk analizi (örnek için bir resim yolu gerekli)
+    # color_analysis = design_ml.extract_color_features('logo.png', n_colors=8)
+    # print("Renk analizi:")
+    # for color in color_analysis['colors'][:5]:
+    #     print(f"{color['name']}: {color['hex']} ({color['percentage']:.1f}%)")
+    # print(f"Harmoni Skoru: {color_analysis['harmony_score']:.1f}")
+    
+    # Renk paleti oluşturma
+    base_color = [66, 135, 245]  # Mavi tonu
+    palette = design_ml.generate_color_palette(base_color, palette_type='analogous', n_colors=5)
+    print(f"\nRenk Paleti ({palette['type']}):")
+    for hex_color in palette['palette']:
+        print(f"  {hex_color}")
+    print(f"Harmoni Skoru: {palette['harmony_score']:.1f}")
+    
+    # Logo optimizasyonu
+    company_info = {
+        'name': 'TechVision',
+        'sector': 'technology',
+        'values': ['innovation', 'trust', 'quality']
+    }
+    
+    optimization = design_ml.optimize_logo_design(company_info)
+    print(f"\nLogo Optimizasyon Önerileri:")
+    print(f"Şirket: {optimization['company_name']}")
+    print(f"Sektör: {optimization['sector']}")
+    print(f"Önerilen Stil: {optimization['recommended_style']}")
+    print(f"Logo Tipi Önerileri: {', '.join(optimization['logo_type_suggestions'])}")
+    print(f"Font Önerileri: {', '.join(optimization['font_suggestions'])}")
+    
+    # Tasarım örüntüsü analizi (simüle veri)
+    design_elements = [
+        {
+            'type': 'header',
+            'colors': [{'hsv': [0.5, 0.8, 0.9]}, {'hsv': [0.6, 0.7, 0.8]}],
+            'symmetry': 0.8,
+            'complexity': 0.3,
+            'balance': 0.9,
+            'contrast': 0.6,
+            'alignment': 0.9,
+            'proximity': 0.8
+        },
+        {
+            'type': 'button',
+            'colors': [{'hsv': [0.5, 0.9, 0.7]}],
+            'symmetry': 0.9,
+            'complexity': 0.2,
+            'balance': 0.8,
+            'contrast': 0.8,
+            'alignment': 0.8,
+            'proximity': 0.7
+        }
+    ]
+    
+    pattern_analysis = design_ml.analyze_design_patterns(design_elements)
+    print(f"\nTasarım Örüntüsü Analizi:")
+    for pattern in pattern_analysis['design_patterns']:
+        print(f"Örüntü {pattern['pattern_id']}: {pattern['pattern_type']}")
+        print(f"  Açıklama: {pattern['description']}")
+        print(f"  Öneriler: {', '.join(pattern['recommendations'][:2])}")
+4. Video Performans Tahmini için ML Modelleri
+python
+# muco_video_ml.py
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, TimeSeriesSplit, cross_val_score
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.svm import SVR
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import warnings
+warnings.filterwarnings('ignore')
+
+class VideoPerformanceML:
+    def __init__(self):
+        self.models = {}
+        self.scaler = StandardScaler()
+        self.feature_importance = {}
+        
+    def create_synthetic_video_data(self, n_samples=1000):
+        """Sentetik video verisi oluşturma"""
+        np.random.seed(42)
+        
+        data = {
+            'video_duration': np.random.randint(30, 1800, n_samples),  # 30sn - 30dk
+            'video_resolution': np.random.choice(['480p', '720p', '1080p', '4K'], n_samples, p=[0.1, 0.3, 0.5, 0.1]),
+            'thumbnail_quality': np.random.uniform(0.5, 1.0, n_samples),  # 0-1 arası
+            'title_length': np.random.randint(10, 100, n_samples),
+            'description_length': np.random.randint(50, 5000, n_samples),
+            'tags_count': np.random.randint(1, 20, n_samples),
+            'has_captions': np.random.choice([0, 1], n_samples, p=[0.3, 0.7]),
+            'publish_hour': np.random.randint(0, 24, n_samples),
+            'publish_day': np.random.randint(0, 7, n_samples),  # 0: Pazartesi
+            'category': np.random.choice(['Education', 'Entertainment', 'Technology', 'Gaming', 'Music'], n_samples),
+            'channel_subs': np.random.randint(100, 10000000, n_samples),
+            'channel_age_days': np.random.randint(30, 3650, n_samples),  # 1 ay - 10 yıl
+            'avg_watch_percentage': np.random.uniform(0.1, 0.9, n_samples),
+            'click_through_rate': np.random.uniform(0.01, 0.2, n_samples),
+            'engagement_rate': np.random.uniform(0.001, 0.1, n_samples),
+            'competition_score': np.random.uniform(0.1, 0.9, n_samples)  # Rakip videoların kalitesi
+        }
+        
+        # Hedef değişken: Tahmini görüntülenme
+        df = pd.DataFrame(data)
+        
+        # Görüntülenme tahmini formülü
+        base_views = df['channel_subs'] * 0.05  % abonelerin %5'i
+        
+        # Faktörler
+        duration_factor = np.where(df['video_duration'] < 180, 1.2, 
+                                  np.where(df['video_duration'] < 600, 1.0, 0.8))
+        
+        resolution_factor = {
+            '480p': 0.7,
+            '720p': 1.0,
+            '1080p': 1.3,
+            '4K': 1.5
+        }
+        df['resolution_factor'] = df['video_resolution'].map(resolution_factor)
+        
+        # Zaman faktörü (17-22 arası prime time)
+        time_factor = np.where((df['publish_hour'] >= 17) & (df['publish_hour'] <= 22), 1.5, 1.0)
+        
+        # Hafta sonu faktörü
+        weekend_factor = np.where(df['publish_day'] >= 5, 1.3, 1.0)
+        
+        # Kategori faktörü
+        category_factor = {
+            'Entertainment': 1.5,
+            'Music': 1.4,
+            'Gaming': 1.3,
+            'Technology': 1.2,
+            'Education': 1.0
+        }
+        df['category_factor'] = df['category'].map(category_factor)
+        
+        # Gürültü ekle
+        noise = np.random.normal(0, 0.2, n_samples)
+        
+        # Final görüntülenme tahmini
+        df['predicted_views'] = (
+            base_views *
+            duration_factor *
+            df['resolution_factor'] *
+            time_factor *
+            weekend_factor *
+            df['category_factor'] *
+            df['thumbnail_quality'] *
+            df['avg_watch_percentage'] *
+            (1 + df['click_through_rate'] * 10) *
+            (1 + df['engagement_rate'] * 50) *
+            (1 + 0.5 * df['competition_score']) *
+            (1 + noise)
+        ).astype(int)
+        
+        # 0'dan küçük değerleri düzelt
+        df['predicted_views'] = df['predicted_views'].clip(lower=100)
+        
+        return df
+    
+    def prepare_features(self, df):
+        """Özellik mühendisliği"""
+        # Orijinal özellikler
+        X = df.drop('predicted_views', axis=1).copy()
+        y = df['predicted_views'].copy()
+        
+        # Yeni özellikler
+        X['title_to_desc_ratio'] = X['title_length'] / (X['description_length'] + 1)
+        X['subs_per_day'] = X['channel_subs'] / (X['channel_age_days'] + 1)
+        X['engagement_score'] = X['avg_watch_percentage'] * X['engagement_rate'] * 100
+        
+        # Zaman özellikleri
+        X['is_prime_time'] = ((X['publish_hour'] >= 17) & (X['publish_hour'] <= 22)).astype(int)
+        X['is_weekend'] = (X['publish_day'] >= 5).astype(int)
+        
+        # Kategori encoding (daha sonra yapılacak)
+        
+        return X, y
+    
+    def create_ml_pipeline(self):
+        """ML pipeline oluşturma"""
+        # Kategorik ve numerik özellikler
+        categorical_features = ['video_resolution', 'category']
+        numerical_features = [
+            'video_duration', 'thumbnail_quality', 'title_length',
+            'description_length', 'tags_count', 'has_captions',
+            'publish_hour', 'publish_day', 'channel_subs',
+            'channel_age_days', 'avg_watch_percentage',
+            'click_through_rate', 'engagement_rate', 'competition_score',
+            'title_to_desc_ratio', 'subs_per_day', 'engagement_score',
+            'is_prime_time', 'is_weekend'
+        ]
+        
+        # Preprocessing
+        numeric_transformer = Pipeline(steps=[
+            ('scaler', StandardScaler())
+        ])
+        
+        categorical_transformer = Pipeline(steps=[
+            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+        ])
+        
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ('num', numeric_transformer, numerical_features),
+                ('cat', categorical_transformer, categorical_features)
+            ]
+        )
+        
+        # Modeller
+        models = {
+            'rf': RandomForestRegressor(n_estimators=100, random_state=42),
+            'xgb': XGBRegressor(n_estimators=100, random_state=42),
+            'lgbm': LGBMRegressor(n_estimators=100, random_state=42),
+            'gb': GradientBoostingRegressor(n_estimators=100, random_state=42),
+            'ridge': Ridge(alpha=1.0),
+            'svr': SVR(kernel='rbf', C=100, gamma=0.1)
+        }
+        
+        # Pipeline'ları oluştur
+        pipelines = {}
+        for name, model in models.items():
+            pipelines[name] = Pipeline(steps=[
+                ('preprocessor', preprocessor),
+                ('regressor', model)
+            ])
+        
+        return pipelines
+    
+    def train_models(self, X, y, test_size=0.2):
+        """Modelleri eğitme"""
+        # Veriyi böl
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=42
+        )
+        
+        # Pipeline'ları oluştur
+        pipelines = self.create_ml_pipeline()
+        
+        results = {}
+        
+        for name, pipeline in pipelines.items():
+            print(f"Eğitiliyor: {name}")
+            
+            # Model eğitimi
+            pipeline.fit(X_train, y_train)
+            
+            # Tahminler
+            y_pred_train = pipeline.predict(X_train)
+            y_pred_test = pipeline.predict(X_test)
+            
+            # Metrikler
+            metrics = {
+                'train_r2': r2_score(y_train, y_pred_train),
+                'test_r2': r2_score(y_test, y_pred_test),
+                'train_rmse': np.sqrt(mean_squared_error(y_train, y_pred_train)),
+                'test_rmse': np.sqrt(mean_squared_error(y_test, y_pred_test)),
+                'train_mae': mean_absolute_error(y_train, y_pred_train),
+                'test_mae': mean_absolute_error(y_test, y_pred_test),
+                'train_mape': self.mean_absolute_percentage_error(y_train, y_pred_train),
+                'test_mape': self.mean_absolute_percentage_error(y_test, y_pred_test)
+            }
+            
+            # Modeli kaydet
+            self.models[name] = pipeline
+            results[name] = metrics
+            
+            # Feature importance (destekleyen modeller için)
+            if hasattr(pipeline.named_steps['regressor'], 'feature_importances_'):
+                # Özellik isimlerini al
+                cat_encoder = pipeline.named_steps['preprocessor'].named_transformers_['cat'].named_steps['onehot']
+                cat_features = cat_encoder.get_feature_names_out(categorical_features)
+                all_features = numerical_features + list(cat_features)
+                
+                # Feature importance
+                importances = pipeline.named_steps['regressor'].feature_importances_
+                self.feature_importance[name] = dict(zip(all_features, importances))
+            
+            print(f"{name} - Test R2: {metrics['test_r2']:.4f}, Test RMSE: {metrics['test_rmse']:.2f}")
+        
+        # En iyi modeli seç
+        self.best_model = max(results, key=lambda x: results[x]['test_r2'])
+        
+        return results, X_test, y_test
+    
+    def mean_absolute_percentage_error(self, y_true, y_pred):
+        """MAPE hesaplama"""
+        y_true, y_pred = np.array(y_true), np.array(y_pred)
+        return np.mean(np.abs((y_true - y_pred) / (y_true + 1e-8))) * 100
+    
+    def predict_video_performance(self, video_features):
+        """Video performans tahmini"""
+        if self.best_model is None:
+            raise ValueError("Önce model eğitilmeli!")
+        
+        # DataFrame'e çevir
+        if isinstance(video_features, dict):
+            video_features = pd.DataFrame([video_features])
+        
+        # Tahmin
+        predictions = self.models[self.best_model].predict(video_features)
+        
+        return predictions[0]
+    
+    def optimize_video_parameters(self, base_features, optimization_target='views'):
+        """Video parametrelerini optimizasyon"""
+        # Grid search benzeri optimizasyon
+        optimizations = []
+        
+        # Süre optimizasyonu
+        durations = [60, 120, 300, 600, 1200]  # 1dk, 2dk, 5dk, 10dk, 20dk
+        for duration in durations:
+            features = base_features.copy()
+            features['video_duration'] = duration
+            predicted = self.predict_video_performance(features)
+            optimizations.append({
+                'parameter': 'duration',
+                'value': duration,
+                'predicted_views': int(predicted),
+                'improvement': self.calculate_improvement(base_features, features)
+            })
+        
+        # Çözünürlük optimizasyonu
+        resolutions = ['480p', '720p', '1080p', '4K']
+        for resolution in resolutions:
+            features = base_features.copy()
+            features['video_resolution'] = resolution
+            predicted = self.predict_video_performance(features)
+            optimizations.append({
+                'parameter': 'resolution',
+                'value': resolution,
+                'predicted_views': int(predicted),
+                'improvement': self.calculate_improvement(base_features, features)
+            })
+        
+        # Yayın saati optimizasyonu
+        hours = [8, 12, 17, 20, 22]  # Sabah, öğlen, akşamüstü, prime time, gece
+        for hour in hours:
+            features = base_features.copy()
+            features['publish_hour'] = hour
+            features['is_prime_time'] = 1 if 17 <= hour <= 22 else 0
+            predicted = self.predict_video_performance(features)
+            optimizations.append({
+                'parameter': 'publish_hour',
+                'value': hour,
+                'predicted_views': int(predicted),
+                'improvement': self.calculate_improvement(base_features, features)
+            })
+        
+        # Sırala
+        optimizations.sort(key=lambda x: x['predicted_views'], reverse=True)
+        
+        return optimizations[:10]  # En iyi 10 optimizasyon
+    
+    def calculate_improvement(self, base_features, optimized_features):
+        """İyileşme yüzdesi"""
+        base_pred = self.predict_video_performance(base_features)
+        opt_pred = self.predict_video_performance(optimized_features)
+        
+        if base_pred > 0:
+            return ((opt_pred - base_pred) / base_pred) * 100
+        return 0
+    
+    def generate_content_strategy(self, channel_features, n_videos=10):
+        """İçerik stratejisi oluşturma"""
+        strategies = []
+        
+        # Farklı içerik türleri
+        content_types = [
+            {'type': 'tutorial', 'duration': 600, 'category': 'Education'},
+            {'type': 'review', 'duration': 480, 'category': 'Technology'},
+            {'type': 'entertainment', 'duration': 300, 'category': 'Entertainment'},
+            {'type': 'live_stream', 'duration': 3600, 'category': 'Gaming'},
+            {'type': 'short', 'duration': 60, 'category': 'Entertainment'}
+        ]
+        
+        for i in range(n_videos):
+            # Rastgele içerik türü seç
+            content_type = content_types[i % len(content_types)]
+            
+            # Temel özellikler
+            features = channel_features.copy()
+            features.update(content_type)
+            
+            # Optimize edilmiş parametreler
+            features['video_resolution'] = '1080p'
+            features['thumbnail_quality'] = 0.9
+            features['tags_count'] = 10
+            features['has_captions'] = 1
+            
+            # Optimal yayın zamanı (prime time)
+            features['publish_hour'] = 19  # 19:00
+            features['is_prime_time'] = 1
+            features['publish_day'] = (i % 5) + 1  # Pazartesi-Cuma
+            
+            # Tahmin
+            predicted_views = self.predict_video_performance(features)
+            
+            strategies.append({
+                'video_id': i + 1,
+                'content_type': content_type['type'],
+                'duration_seconds': content_type['duration'],
+                'category': content_type['category'],
+                'publish_day': self.get_day_name(features['publish_day']),
+                'publish_hour': features['publish_hour'],
+                'predicted_views': int(predicted_views),
+                'estimated_revenue': self.estimate_revenue(predicted_views, content_type['category']),
+                'production_difficulty': self.estimate_difficulty(content_type['type']),
+                'seo_potential': self.estimate_seo_potential(content_type['type'])
+            })
+        
+        return strategies
+    
+    def get_day_name(self, day_num):
+        """Gün ismi"""
+        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        return days[day_num] if day_num < len(days) else 'Unknown'
+    
+    def estimate_revenue(self, views, category):
+        """Tahmini gelir"""
+        # CPM (Cost Per Mille) değerleri
+        cpm_rates = {
+            'Education': 2.0,
+            'Technology': 3.0,
+            'Entertainment': 2.5,
+            'Gaming': 3.5,
+            'Music': 1.8
+        }
+        
+        cpm = cpm_rates.get(category, 2.0)
+        revenue = (views / 1000) * cpm
+        
+        return revenue
+    
+    def estimate_difficulty(self, content_type):
+        """Üretim zorluğu"""
+        difficulties = {
+            'tutorial': 'Medium',
+            'review': 'Low',
+            'entertainment': 'Low',
+            'live_stream': 'High',
+            'short': 'Very Low'
+        }
+        return difficulties.get(content_type, 'Medium')
+    
+    def estimate_seo_potential(self, content_type):
+        """SEO potansiyeli"""
+        seo_scores = {
+            'tutorial': 'High',
+            'review': 'Very High',
+            'entertainment': 'Medium',
+            'live_stream': 'Low',
+            'short': 'Very Low'
+        }
+        return seo_scores.get(content_type, 'Medium')
+    
+    def get_recommendations(self, video_features, current_performance):
+        """Video için öneriler"""
+        recommendations = []
+        
+        # Süre analizi
+        duration = video_features.get('video_duration', 0)
+        if duration < 120:
+            recommendations.append({
+                'category': 'duration',
+                'recommendation': 'Videonun süresini 2-5 dakika arasına çıkarın',
+                'reason': 'Kısa videolar daha düşük izlenme süresine sahip olma eğilimindedir',
+                'expected_improvement': '+15-25%'
+            })
+        elif duration > 600:
+            recommendations.append({
+                'category': 'duration',
+                'recommendation': 'Videonun süresini 10 dakikanın altına indirin',
+                'reason': 'Çok uzun videolar izleyici tutmayı zorlaştırır',
+                'expected_improvement': '+10-20%'
+            })
+        
+        # Çözünürlük analizi
+        resolution = video_features.get('video_resolution', '720p')
+        if resolution in ['480p', '720p']:
+            recommendations.append({
+                'category': 'quality',
+                'recommendation': 'Çözünürlüğü 1080p veya üzerine yükseltin',
+                'reason': 'Yüksek çözünürlük izleyici deneyimini önemli ölçüde artırır',
+                'expected_improvement': '+20-30%'
+            })
+        
+        # Başlık analizi
+        title_length = video_features.get('title_length', 0)
+        if title_length < 30:
+            recommendations.append({
+                'category': 'seo',
+                'recommendation': 'Başlığı 50-70 karakter arasında uzatın',
+                'reason': 'Uzun başlıklar daha fazla anahtar kelime içerir',
+                'expected_improvement': '+10-15%'
+            })
+        
+        # Açıklama analizi
+        desc_length = video_features.get('description_length', 0)
+        if desc_length < 200:
+            recommendations.append({
+                'category': 'seo',
+                'recommendation': 'Açıklamayı en az 300 karakter yapın',
+                'reason': 'Detaylı açıklamalar SEO ve keşfedilebilirliği artırır',
+                'expected_improvement': '+5-10%'
+            })
+        
+        # Etiket analizi
+        tags_count = video_features.get('tags_count', 0)
+        if tags_count < 5:
+            recommendations.append({
+                'category': 'discovery',
+                'recommendation': 'En az 10-15 ilgili etiket ekleyin',
+                'reason': 'Etiketler videonun keşfedilmesini kolaylaştırır',
+                'expected_improvement': '+8-12%'
+            })
+        
+        return recommendations
+
+# Kullanım örneği
+if __name__ == "__main__":
+    # Video ML modeli
+    video_ml = VideoPerformanceML()
+    
+    # Sentetik veri oluştur
+    df = video_ml.create_synthetic_video_data(n_samples=2000)
+    print(f"Veri boyutu: {df.shape}")
+    print(f"Sütunlar: {df.columns.tolist()}")
+    
+    # Özellikleri hazırla
+    X, y = video_ml.prepare_features(df)
+    print(f"\nÖzellik sayısı: {X.shape[1]}")
+    print(f"Hedef dağılımı:")
+    print(y.describe())
+    
+    # Modelleri eğit
+    results, X_test, y_test = video_ml.train_models(X, y, test_size=0.2)
+    
+    # En iyi model
+    print(f"\nEn iyi model: {video_ml.best_model}")
+    print(f"Test R2: {results[video_ml.best_model]['test_r2']:.4f}")
+    print(f"Test RMSE: {results[video_ml.best_model]['test_rmse']:.2f}")
+    print(f"Test MAPE: {results[video_ml.best_model]['test_mape']:.2f}%")
+    
+    # Yeni video tahmini
+    new_video = {
+        'video_duration': 420,
+        'video_resolution': '1080p',
+        'thumbnail_quality': 0.85,
+        'title_length': 65,
+        'description_length': 450,
+        'tags_count': 12,
+        'has_captions': 1,
+        'publish_hour': 19,
+        'publish_day': 2,  # Salı
+        'category': 'Technology',
+        'channel_subs': 50000,
+        'channel_age_days': 730,
+        'avg_watch_percentage': 0.65,
+        'click_through_rate': 0.08,
+        'engagement_rate': 0.025,
+        'competition_score': 0.6
+    }
+    
+    predicted_views = video_ml.predict_video_performance(new_video)
+    print(f"\nYeni video tahmini görüntülenme: {int(predicted_views):,}")
+    
+    # Optimizasyon önerileri
+    optimizations = video_ml.optimize_video_parameters(new_video)
+    print(f"\nOptimizasyon Önerileri:")
+    for opt in optimizations[:3]:
+        print(f"{opt['parameter']}={opt['value']}: {int(opt['predicted_views']):,} görüntülenme "
+              f"({opt['improvement']:+.1f}%)")
+    
+    # İçerik stratejisi
+    channel_features = {
+        'channel_subs': 50000,
+        'channel_age_days': 730,
+        'avg_watch_percentage': 0.65,
+        'click_through_rate': 0.08,
+        'engagement_rate': 0.025,
+        'competition_score': 0.6
+    }
+    
+    strategies = video_ml.generate_content_strategy(channel_features, n_videos=5)
+    print(f"\nİçerik Stratejisi (İlk 5 video):")
+    for strategy in strategies:
+        print(f"Video {strategy['video_id']}: {strategy['content_type']} "
+              f"({strategy['duration_seconds']//60}d) - "
+              f"Tahmini: {int(strategy['predicted_views']):,} görüntülenme")
+5. Entegre MUCO ML Platformu
+python
+# muco_integrated_ml.py
+import json
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import pickle
+import os
+
+class MUCOIntegratedML:
+    def __init__(self, data_path='./muco_data/'):
+        self.data_path = data_path
+        self.models = {}
+        self.results = {}
+        
+        # Alt modelleri başlat
+        self.finance_ml = FinancialEnsembleML()
+        self.content_ml = ContentOptimizationML()
+        self.design_ml = DesignOptimizationML()
+        self.video_ml = VideoPerformanceML()
+        
+        # Veri yapıları
+        self.user_profiles = {}
+        self.project_history = []
+        
+        # Model dosyalarını yükleme
+        self.load_saved_models()
+    
+    def load_saved_models(self):
+        """Kayıtlı modelleri yükle"""
+        if not os.path.exists(self.data_path):
+            os.makedirs(self.data_path)
+        
+        model_files = {
+            'finance': 'finance_model.pkl',
+            'content': 'content_model.pkl',
+            'design': 'design_model.pkl',
+            'video': 'video_model.pkl'
+        }
+        
+        for model_type, filename in model_files.items():
+            filepath = os.path.join(self.data_path, filename)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'rb') as f:
+                        self.models[model_type] = pickle.load(f)
+                    print(f"{model_type} modeli yüklendi")
+                except Exception as e:
+                    print(f"{model_type} modeli yüklenemedi: {str(e)}")
+    
+    def save_models(self):
+        """Modelleri kaydet"""
+        if not os.path.exists(self.data_path):
+            os.makedirs(self.data_path)
+        
+        for model_type, model in self.models.items():
+            filepath = os.path.join(self.data_path, f"{model_type}_model.pkl")
+            try:
+                with open(filepath, 'wb') as f:
+                    pickle.dump(model, f)
+                print(f"{model_type} modeli kaydedildi")
+            except Exception as e:
+                print(f"{model_type} modeli kaydedilemedi: {str(e)}")
+    
+    def analyze_project(self, project_data):
+        """Proje analizi"""
+        analysis = {
+            'project_id': project_data.get('id', len(self.project_history) + 1),
+            'project_name': project_data.get('name', 'Unnamed Project'),
+            'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'modules': {}
+        }
+        
+        # Finans analizi
+        if 'financial_analysis' in project_data:
+            symbol = project_data['financial_analysis'].get('symbol', 'AAPL')
+            df = self.finance_ml.prepare_features(symbol, period='1y')
+            
+            # Özellik seçimi
+            X_train, X_test, y_train, y_test, features = self.finance_ml.split_data(
+                df, target_horizon=7, test_size=0.2
+            )
+            
+            # Modelleri eğit
+            results = self.finance_ml.train_models(X_train, y_train, X_test, y_test)
+            
+            analysis['modules']['financial'] = {
+                'symbol': symbol,
+                'best_model': self.finance_ml.best_model,
+                'performance': results[self.finance_ml.best_model],
+                'recommendations': self.finance_ml.generate_trading_signals(
+                    df[features].tail(100), horizon=7
+                ).to_dict() if self.finance_ml.best_model else None
+            }
+        
+        # İçerik analizi
+        if 'content_analysis' in project_data:
+            texts = project_data['content_analysis'].get('texts', [])
+            
+            if texts:
+                # Duygu analizi
+                sentiment_results = self.content_ml.sentiment_analysis(texts)
+                
+                # Konu modelleme
+                topic_results = self.content_ml.topic_modeling(texts, n_topics=3)
+                
+                # Optimizasyon skorları
+                optimization_scores = [
+                    self.content_ml.content_optimization_score(text) 
+                    for text in texts[:5]
+                ]
+                
+                analysis['modules']['content'] = {
+                    'total_texts': len(texts),
+                    'sentiment_summary': sentiment_results['sentiment'].value_counts().to_dict(),
+                    'topics': topic_results['topics'],
+                    'optimization_scores': optimization_scores,
+                    'keyword_analysis': self.content_ml.keyword_analysis(texts, top_n=10)
+                }
+        
+        # Tasarım analizi
+        if 'design_analysis' in project_data:
+            design_info = project_data['design_analysis']
+            
+            # Logo optimizasyonu
+            logo_optimization = self.design_ml.optimize_logo_design(design_info)
+            
+            # Renk paleti
+            base_color = logo_optimization['color_palette']['base_color']
+            color_palettes = {}
+            for palette_type in ['analogous', 'complementary', 'triadic', 'monochromatic']:
+                palette = self.design_ml.generate_color_palette(
+                    base_color, palette_type=palette_type
+                )
+                color_palettes[palette_type] = palette
+            
+            analysis['modules']['design'] = {
+                'logo_optimization': logo_optimization,
+                'color_palettes': color_palettes,
+                'design_principles': self.design_ml.get_design_principles(
+                    logo_optimization['recommended_style']
+                ),
+                'layout_suggestions': self.design_ml.get_layout_suggestions(
+                    logo_optimization['recommended_style']
+                )
+            }
+        
+        # Video analizi
+        if 'video_analysis' in project_data:
+            video_info = project_data['video_analysis']
+            
+            # Tahmini performans
+            predicted_views = self.video_ml.predict_video_performance(video_info)
+            
+            # Optimizasyon önerileri
+            optimizations = self.video_ml.optimize_video_parameters(video_info)
+            
+            # Öneriler
+            recommendations = self.video_ml.get_recommendations(video_info, predicted_views)
+            
+            analysis['modules']['video'] = {
+                'predicted_views': int(predicted_views),
+                'estimated_revenue': self.video_ml.estimate_revenue(
+                    predicted_views, video_info.get('category', 'Technology')
+                ),
+                'top_optimizations': optimizations[:3],
+                'recommendations': recommendations
+            }
+        
+        # Proje geçmişine ekle
+        self.project_history.append(analysis)
+        
+        # Sonuçları kaydet
+        self.save_analysis_results(analysis)
+        
+        return analysis
+    
+    def save_analysis_results(self, analysis):
+        """Analiz sonuçlarını kaydet"""
+        filename = f"analysis_{analysis['project_id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filepath = os.path.join(self.data_path, filename)
+        
+        # JSON serializable hale getir
+        def convert_to_serializable(obj):
+            if isinstance(obj, (np.integer, np.floating)):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, pd.DataFrame):
+                return obj.to_dict()
+            elif isinstance(obj, pd.Series):
+                return obj.to_dict()
+            elif isinstance(obj, datetime):
+                return obj.isoformat()
+            elif hasattr(obj, '__dict__'):
+                return obj.__dict__
+            else:
+                return str(obj)
+        
+        # Kaydet
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(analysis, f, indent=2, default=convert_to_serializable, ensure_ascii=False)
+        
+        print(f"Analiz sonuçları kaydedildi: {filename}")
+    
+    def generate_comprehensive_report(self, project_id):
+        """Kapsamlı rapor oluştur"""
+        # Projeyi bul
+        project_analysis = None
+        for analysis in self.project_history:
+            if analysis['project_id'] == project_id:
+                project_analysis = analysis
+                break
+        
+        if not project_analysis:
+            return {"error": "Proje bulunamadı"}
+        
+        # Rapor oluştur
+        report = {
+            'executive_summary': self.generate_executive_summary(project_analysis),
+            'detailed_analysis': project_analysis['modules'],
+            'recommendations': self.generate_recommendations(project_analysis),
+            'action_plan': self.generate_action_plan(project_analysis),
+            'risk_assessment': self.assess_risks(project_analysis),
+            'success_metrics': self.define_success_metrics(project_analysis),
+            'timeline': self.create_timeline(project_analysis)
+        }
+        
+        return report
+    
+    def generate_executive_summary(self, analysis):
+        """Yönetici özeti oluştur"""
+        summary = {
+            'project_name': analysis['project_name'],
+            'analysis_date': analysis['analysis_date'],
+            'key_findings': [],
+            'overall_status': 'Geliştirilmeye Açık',
+            'priority_level': 'Medium'
+        }
+        
+        # Modüllere göre bulgular
+        if 'financial' in analysis['modules']:
+            fin_module = analysis['modules']['financial']
+            summary['key_findings'].append({
+                'module': 'Finans',
+                'finding': f"En iyi model: {fin_module['best_model']}",
+                'performance': f"Test R2: {fin_module['performance']['test_r2']:.4f}"
+            })
+        
+        if 'content' in analysis['modules']:
+            content_module = analysis['modules']['content']
+            avg_score = np.mean([s['overall_score'] for s in content_module['optimization_scores']])
+            summary['key_findings'].append({
+                'module': 'İçerik',
+                'finding': f"Ortalama optimizasyon skoru: {avg_score:.1f}",
+                'performance': f"{len(content_module['topics'])} konu tespit edildi"
+            })
+        
+        if 'design' in analysis['modules']:
+            design_module = analysis['modules']['design']
+            summary['key_findings'].append({
+                'module': 'Tasarım',
+                'finding': f"Önerilen stil: {design_module['logo_optimization']['recommended_style']}",
+                'performance': f"{len(design_module['color_palettes'])} renk paleti oluşturuldu"
+            })
+        
+        if 'video' in analysis['modules']:
+            video_module = analysis['modules']['video']
+            summary['key_findings'].append({
+                'module': 'Video',
+                'finding': f"Tahmini görüntülenme: {video_module['predicted_views']:,}",
+                'performance': f"Tahmini gelir: ${video_module['estimated_revenue']:.2f}"
+            })
+        
+        return summary
+    
+    def generate_recommendations(self, analysis):
+        """Öneriler oluştur"""
+        recommendations = []
+        
+        # Finans önerileri
+        if 'financial' in analysis['modules']:
+            fin_module = analysis['modules']['financial']
+            if fin_module.get('recommendations') is not None:
+                signals = fin_module['recommendations']
+                buy_signals = (signals['Signal'] == 1).sum() if 'Signal' in signals else 0
+                sell_signals = (signals['Signal'] == -1).sum() if 'Signal' in signals else 0
+                
+                recommendations.append({
+                    'category': 'Finans',
+                    'recommendation': f"{buy_signals} al, {sell_signals} sat sinyali",
+                    'priority': 'High' if buy_signals > 0 or sell_signals > 0 else 'Medium',
+                    'impact': 'Yüksek'
+                })
+        
+        # İçerik önerileri
+        if 'content' in analysis['modules']:
+            content_module = analysis['modules']['content']
+            if content_module['optimization_scores']:
+                avg_score = np.mean([s['overall_score'] for s in content_module['optimization_scores']])
+                if avg_score < 70:
+                    recommendations.append({
+                        'category': 'İçerik',
+                        'recommendation': 'İçerik optimizasyonu gerekiyor',
+                        'priority': 'Medium',
+                        'impact': 'Orta'
+                    })
+        
+        # Tasarım önerileri
+        if 'design' in analysis['modules']:
+            recommendations.append({
+                'category': 'Tasarım',
+                'recommendation': 'Önerilen renk paletini ve stili uygulayın',
+                'priority': 'High',
+                'impact': 'Yüksek'
+            })
+        
+        # Video önerileri
+        if 'video' in analysis['modules']:
+            video_module = analysis['modules']['video']
+            for rec in video_module.get('recommendations', [])[:3]:
+                recommendations.append({
+                    'category': 'Video',
+                    'recommendation': rec['recommendation'],
+                    'priority': 'Medium',
+                    'impact': rec.get('expected_improvement', 'Orta')
+                })
+        
+        return recommendations
+    
+    def generate_action_plan(self, analysis):
+        """Aksiyon planı oluştur"""
+        actions = []
+        timeline_days = 0
+        
+        # Finans aksiyonları
+        if 'financial' in analysis['modules']:
+            actions.append({
+                'task': 'Finansal model eğitimi ve doğrulama',
+                'owner': 'Finans Analisti',
+                'timeline_days': 3,
+                'dependencies': [],
+                'status': 'Planlandı'
+            })
+            timeline_days = max(timeline_days, 3)
+        
+        # İçerik aksiyonları
+        if 'content' in analysis['modules']:
+            actions.append({
+                'task': 'İçerik optimizasyonu ve SEO çalışması',
+                'owner': 'İçerik Uzmanı',
+                'timeline_days': 5,
+                'dependencies': ['Finansal model eğitimi'],
+                'status': 'Planlandı'
+            })
+            timeline_days = max(timeline_days, 8)
+        
+        # Tasarım aksiyonları
+        if 'design' in analysis['modules']:
+            actions.append({
+                'task': 'Logo ve marka kimliği tasarımı',
+                'owner': 'Tasarımcı',
+                'timeline_days': 7,
+                'dependencies': [],
+                'status': 'Planlandı'
+            })
+            timeline_days = max(timeline_days, 7)
+        
+        # Video aksiyonları
+        if 'video' in analysis['modules']:
+            actions.append({
+                'task': 'Video içerik planlaması ve üretimi',
+                'owner': 'Video Prodüktörü',
+                'timeline_days': 10,
+                'dependencies': ['İçerik optimizasyonu'],
+                'status': 'Planlandı'
+            })
+            timeline_days = max(timeline_days, 15)
+        
+        return {
+            'actions': actions,
+            'total_timeline_days': timeline_days,
+            'start_date': datetime.now().strftime('%Y-%m-%d'),
+            'expected_completion_date': (datetime.now() + timedelta(days=timeline_days)).strftime('%Y-%m-%d')
+        }
+    
+    def assess_risks(self, analysis):
+        """Risk değerlendirmesi"""
+        risks = []
+        
+        # Finans riskleri
+        if 'financial' in analysis['modules']:
+            risks.append({
+                'category': 'Finans',
+                'risk': 'Piyasa volatilitesi',
+                'probability': 'Medium',
+                'impact': 'High',
+                'mitigation': 'Diversifikasyon ve risk yönetimi stratejileri'
+            })
+        
+        # İçerik riskleri
+        if 'content' in analysis['modules']:
+            risks.append({
+                'category': 'İçerik',
+                'risk': 'SEO algoritma değişiklikleri',
+                'probability': 'Low',
+                'impact': 'Medium',
+                'mitigation': 'Kaliteli, kullanıcı odaklı içerik üretimi'
+            })
+        
+        # Tasarım riskleri
+        if 'design' in analysis['modules']:
+            risks.append({
+                'category': 'Tasarım',
+                'risk': 'Marka algısında tutarsızlık',
+                'probability': 'Low',
+                'impact': 'High',
+                'mitigation': 'Marka rehberi oluşturma ve sıkı uygulama'
+            })
+        
+        # Video riskleri
+        if 'video' in analysis['modules']:
+            risks.append({
+                'category': 'Video',
+                'risk': 'Düşük izleyici katılımı',
+                'probability': 'Medium',
+                'impact': 'Medium',
+                'mitigation': 'İzleyici analizi ve içerik optimizasyonu'
+            })
+        
+        return risks
+    
+    def define_success_metrics(self, analysis):
+        """Başarı metrikleri tanımla"""
+        metrics = {
+            'financial_metrics': {
+                'target_return': '15% yıllık getiri',
+                'risk_adjusted_return': 'Sharpe oranı > 1.0',
+                'max_drawdown': '< 20%',
+                'win_rate': '> 55%'
+            },
+            'content_metrics': {
+                'seo_ranking': 'İlk 3 sayfa',
+                'engagement_rate': '> 3%',
+                'conversion_rate': '> 2%',
+                'bounce_rate': '< 40%'
+            },
+            'design_metrics': {
+                'brand_recognition': '6 ay içinde %30 artış',
+                'user_satisfaction': '> 4.5/5',
+                'consistency_score': '> 90%'
+            },
+            'video_metrics': {
+                'views_target': '1M görüntülenme (ilk 30 gün)',
+                'watch_time': 'Ortalama 3+ dakika',
+                'subscriber_growth': '10K yeni abone (ilk 30 gün)',
+                'engagement_rate': '> 5%'
+            }
+        }
+        
+        return metrics
+    
+    def create_timeline(self, analysis):
+        """Zaman çizelgesi oluştur"""
+        start_date = datetime.now()
+        timeline = []
+        
+        # Haftalık aşamalar
+        phases = [
+            {'week': 1, 'phase': 'Planlama ve Analiz', 'milestones': ['İhtiyaç analizi', 'Risk değerlendirmesi']},
+            {'week': 2, 'phase': 'Geliştirme', 'milestones': ['Model eğitimi', 'İçerik oluşturma']},
+            {'week': 3, 'phase': 'Test ve Optimizasyon', 'milestones': ['A/B testleri', 'Performans optimizasyonu']},
+            {'week': 4, 'phase': 'Lansman', 'milestones': ['Canlıya alma', 'İzleme ve raporlama']}
+        ]
+        
+        for phase in phases:
+            phase_date = start_date + timedelta(days=(phase['week'] - 1) * 7)
+            timeline.append({
+                'date': phase_date.strftime('%Y-%m-%d'),
+                'phase': phase['phase'],
+                'milestones': phase['milestones'],
+                'deliverables': self.get_phase_deliverables(phase['phase'])
+            })
+        
+        return timeline
+    
+    def get_phase_deliverables(self, phase):
+        """Faz teslimleri"""
+        deliverables = {
+            'Planlama ve Analiz': [
+                'Proje planı',
+                'Risk analizi raporu',
+                'Kaynak planlaması'
+            ],
+            'Geliştirme': [
+                'Eğitilmiş modeller',
+                'İçerik stratejisi',
+                'Tasarım konseptleri'
+            ],
+            'Test ve Optimizasyon': [
+                'Test sonuçları',
+                'Optimizasyon raporu',
+                'Performans metrikleri'
+            ],
+            'Lansman': [
+                'Canlı sistem',
+                'Kullanıcı rehberi',
+                'Bakım planı'
+            ]
+        }
+        return deliverables.get(phase, [])
+
+# Ana uygulama örneği
+if __name__ == "__main__":
+    # MUCO ML platformunu başlat
+    muco_ml = MUCOIntegratedML(data_path='./muco_ml_data/')
+    
+    # Örnek proje verisi
+    sample_project = {
+        'id': 1,
+        'name': 'TechStart AI Startup',
+        'financial_analysis': {
+            'symbol': 'AAPL',
+            'period': '6mo'
+        },
+        'content_analysis': {
+            'texts': [
+                "Artificial intelligence startups are revolutionizing industries with innovative solutions.",
+                "Machine learning algorithms can process vast amounts of data to uncover valuable insights.",
+                "The future of technology lies in the integration of AI with human intelligence."
+            ]
+        },
+        'design_analysis': {
+            'name': 'TechStart AI',
+            'sector': 'technology',
+            'values': ['innovation', 'trust', 'excellence']
+        },
+        'video_analysis': {
+            'video_duration': 420,
+            'video_resolution': '1080p',
+            'thumbnail_quality': 0.85,
+            'title_length': 65,
+            'description_length': 450,
+            'tags_count': 12,
+            'has_captions': 1,
+            'publish_hour': 19,
+            'publish_day': 2,
+            'category': 'Technology',
+            'channel_subs': 50000,
+            'channel_age_days': 730,
+            'avg_watch_percentage': 0.65,
+            'click_through_rate': 0.08,
+            'engagement_rate': 0.025,
+            'competition_score': 0.6
+        }
+    }
+    
+    # Projeyi analiz et
+    print("Proje analizi başlıyor...")
+    analysis = muco_ml.analyze_project(sample_project)
+    
+    print(f"\nProje Analizi Tamamlandı: {analysis['project_name']}")
+    print(f"Analiz Tarihi: {analysis['analysis_date']}")
+    
+    # Kapsamlı rapor oluştur
+    report = muco_ml.generate_comprehensive_report(1)
+    
+    # Yönetici özetini göster
+    print("\n=== YÖNETİCİ ÖZETİ ===")
+    print(f"Proje: {report['executive_summary']['project_name']}")
+    print(f"Durum: {report['executive_summary']['overall_status']}")
+    print(f"Öncelik: {report['executive_summary']['priority_level']}")
+    
+    for finding in report['executive_summary']['key_findings']:
+        print(f"{finding['module']}: {finding['finding']}")
+    
+    # Önerileri göster
+    print("\n=== TEMEL ÖNERİLER ===")
+    for rec in report['recommendations'][:5]:
+        print(f"{rec['category']}: {rec['recommendation']} (Öncelik: {rec['priority']})")
+    
+    # Aksiyon planını göster
+    print("\n=== AKSİYON PLANI ===")
+    print(f"Toplam Süre: {report['action_plan']['total_timeline_days']} gün")
+    print(f"Başlangıç: {report['action_plan']['start_date']}")
+    print(f"Bitiş: {report['action_plan']['expected_completion_date']}")
+    
+    # Modelleri kaydet
+    muco_ml.save_models()
+    
+    print("\nMUCO ML Platformu analizi tamamlandı!")
+Bu genişletilmiş makine öğrenmesi implementasyonu, MUCO platformunu şu alanlarda güçlendirir:
+
+Özellikler ve Avantajlar:
+Ensemble Finans Modelleri: 10+ farklı ML modeli, hiperparametre optimizasyonu, trading sinyalleri
+
+İçerik Optimizasyonu: NLP, duygu analizi, okunabilirlik, konu modelleme, SEO analizi
+
+Tasarım ML: Renk analizi, tasarım örüntüleri, logo optimizasyonu, renk paleti oluşturma
+
+Video Performans ML: Görüntülenme tahmini, optimizasyon önerileri, içerik stratejisi
+
+Entegre Platform: Tüm modüllerin birleştirilmesi, otomatik raporlama, aksiyon planları
+
+Kurulum:
+bash
+# Gerekli kütüphaneler
+pip install scikit-learn xgboost lightgbm catboost
+pip install statsmodels pmdarima prophet
+pip install nltk textblob gensim spacy
+pip install opencv-python pillow webcolors
+pip install pandas numpy matplotlib seaborn
+
+# Ek NLP modelleri
+python -m spacy download en_core_web_sm
+Kullanım Senaryoları:
+Finansal Tahmin: Hisse senedi getirileri, risk analizi, portföy optimizasyonu
+
+İçerik Stratejisi: SEO optimizasyonu, duygu analizi, konu planlaması
+
+Marka Tasarımı: Logo önerileri, renk paleti, marka kimliği
+
+Video Pazarlama: Görüntülenme tahmini, içerik planlaması, optimizasyon
+
+Entegre Proje Yönetimi: Tüm bileşenlerin birlikte çalışması
+
+Bu implementasyon, MUCO platformunu endüstri düzeyinde bir makine öğrenmesi çözümü haline getirir.
+
+Bu yanıt, yalnızca referans amaçlı AI tarafından oluşturulmuştur.

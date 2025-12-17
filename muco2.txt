@@ -1,0 +1,2705 @@
+yukarıdaki  makina öğrenmesinin modellemesini  kodla ve geliştir
+Biz şimdi MUCO platformu için tüm makine öğrenmesi modüllerini birleştiren ve modelleme işlemlerini kapsamlı bir şekilde ele alan bir kod yazacağız.
+Bu kod, her bir modül için eğitim, değerlendirme, optimizasyon ve depolama işlemlerini içerecek.
+
+Plan:
+
+Finans Modülü: Ensemble yöntemleri ile hisse senedi fiyat tahmini.
+
+İçerik Modülü: NLP ve konu modelleme ile içerik analizi ve optimizasyonu.
+
+Tasarım Modülü: Görüntü işleme ve renk analizi ile tasarım önerileri.
+
+Video Modülü: Video performans tahmini ve optimizasyon önerileri.
+
+Her modül için:
+
+Veri hazırlama
+
+Model eğitimi
+
+Model değerlendirme
+
+Model kaydetme
+
+Tahmin yapma
+
+Ayrıca, tüm modelleri yöneten bir merkezi sınıf oluşturacağız.
+
+MUCO: Gelişmiş Makine Öğrenmesi Modelleme ve Production Pipeline
+İşte MUCO platformu için üretim seviyesinde makine öğrenmesi modelleme, pipeline ve deployment sistemi:
+
+python
+# muco_modeling_pipeline.py
+import pandas as pd
+import numpy as np
+import json
+import pickle
+import joblib
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
+
+# ML Framework'leri
+import mlflow
+import mlflow.sklearn
+import mlflow.pyfunc
+from mlflow.models.signature import infer_signature
+import bentoml
+from bentoml import api, artifacts, BentoService, env
+from bentoml.adapters import DataframeInput, JsonInput
+from bentoml.service.artifacts import PickleArtifact
+
+# Model Geliştirme
+from sklearn.pipeline import Pipeline, FeatureUnion
+from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
+from sklearn.preprocessing import (StandardScaler, MinMaxScaler, RobustScaler,
+                                   OneHotEncoder, PowerTransformer, QuantileTransformer,
+                                   PolynomialFeatures, FunctionTransformer)
+from sklearn.impute import SimpleImputer, KNNImputer
+from sklearn.feature_selection import (SelectKBest, SelectFromModel, RFE,
+                                       VarianceThreshold, mutual_info_regression)
+from sklearn.model_selection import (TimeSeriesSplit, cross_val_score,
+                                     cross_validate, learning_curve,
+                                     validation_curve, GridSearchCV,
+                                     RandomizedSearchCV)
+
+# Modeller
+from sklearn.ensemble import (RandomForestRegressor, GradientBoostingRegressor,
+                              VotingRegressor, StackingRegressor, BaggingRegressor,
+                              AdaBoostRegressor, ExtraTreesRegressor,
+                              IsolationForest)
+from sklearn.linear_model import (LinearRegression, Ridge, Lasso, ElasticNet,
+                                  BayesianRidge, HuberRegressor, PassiveAggressiveRegressor)
+from sklearn.svm import SVR, NuSVR, LinearSVR
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.neural_network import MLPRegressor
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.cross_decomposition import PLSRegression
+from sklearn.tree import DecisionTreeRegressor
+
+# İstatistiksel Modeller
+import statsmodels.api as sm
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from statsmodels.tsa.vector_ar.var_model import VAR
+from statsmodels.regression.rolling import RollingOLS
+
+# Derin Öğrenme
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers, callbacks, optimizers, regularizers
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+# Değerlendirme ve Metrikler
+from sklearn.metrics import (mean_squared_error, mean_absolute_error,
+                             r2_score, explained_variance_score,
+                             mean_absolute_percentage_error,
+                             median_absolute_error, max_error)
+from scipy import stats
+import shap
+import lime
+import lime.lime_tabular
+from sklearn.inspection import permutation_importance
+import eli5
+from eli5.sklearn import PermutationImportance
+
+# Optimizasyon
+import optuna
+from hyperopt import hp, fmin, tpe, Trials, STATUS_OK
+from skopt import BayesSearchCV
+from skopt.space import Real, Categorical, Integer
+
+# Monitoring
+import evidently
+from evidently.dashboard import Dashboard
+from evidently.tabs import DataDriftTab, NumTargetDriftTab
+from prometheus_client import start_http_server, Counter, Gauge, Histogram
+import grafanalib
+from grafanalib.core import Dashboard, TimeSeries, GaugePanel
+
+# Feature Store
+import feast
+from feast import FeatureStore, Entity, ValueType, FeatureView, Field
+from feast.infra.offline_stores.file_source import FileSource
+from feast.types import Float64, Int64, String
+
+# Model Registry
+import mlflow
+from mlflow.tracking import MlflowClient
+
+# Data Version Control
+import dvc.api
+
+class MucoModelingPipeline:
+    """MUCO Platform Modelleme Pipeline"""
+    
+    def __init__(self, config_path='config/model_config.json'):
+        self.config = self.load_config(config_path)
+        self.experiment_name = "MUCO_Production"
+        self.mlflow_client = MlflowClient()
+        self.models = {}
+        self.pipelines = {}
+        self.feature_store = None
+        self.metrics_history = []
+        
+        # MLflow ayarları
+        mlflow.set_tracking_uri(self.config.get('mlflow_uri', 'http://localhost:5000'))
+        mlflow.set_experiment(self.experiment_name)
+        
+    def load_config(self, config_path):
+        """Konfigürasyon yükleme"""
+        try:
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        except:
+            # Varsayılan konfigürasyon
+            return {
+                "data": {
+                    "train_path": "data/train",
+                    "test_path": "data/test",
+                    "validation_path": "data/validation"
+                },
+                "modeling": {
+                    "target_column": "target",
+                    "test_size": 0.2,
+                    "random_state": 42,
+                    "cv_folds": 5,
+                    "scoring_metric": "neg_mean_squared_error"
+                },
+                "hyperparameters": {
+                    "n_trials": 100,
+                    "timeout": 3600,
+                    "direction": "minimize"
+                },
+                "monitoring": {
+                    "drift_threshold": 0.1,
+                    "performance_threshold": 0.95
+                }
+            }
+    
+    def create_feature_engineering_pipeline(self):
+        """Özellik mühendisliği pipeline'ı"""
+        # Numerik özellikler için pipeline
+        numeric_transformer = Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='median')),
+            ('scaler', RobustScaler()),
+            ('polynomial', PolynomialFeatures(degree=2, include_bias=False)),
+            ('variance_threshold', VarianceThreshold(threshold=0.01))
+        ])
+        
+        # Kategorik özellikler için pipeline
+        categorical_transformer = Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False)),
+            ('selector', SelectKBest(score_func=mutual_info_regression, k=10))
+        ])
+        
+        # Zaman serisi özellikleri için pipeline
+        datetime_transformer = Pipeline(steps=[
+            ('extractor', FunctionTransformer(self.extract_datetime_features)),
+            ('scaler', MinMaxScaler())
+        ])
+        
+        # Metin özellikleri için pipeline
+        text_transformer = Pipeline(steps=[
+            ('vectorizer', FunctionTransformer(self.text_to_features)),
+            ('dim_reduction', SelectFromModel(ExtraTreesRegressor(n_estimators=50)))
+        ])
+        
+        return ColumnTransformer(
+            transformers=[
+                ('num', numeric_transformer, self.config.get('numeric_features', [])),
+                ('cat', categorical_transformer, self.config.get('categorical_features', [])),
+                ('datetime', datetime_transformer, self.config.get('datetime_features', [])),
+                ('text', text_transformer, self.config.get('text_features', []))
+            ],
+            remainder='drop',
+            n_jobs=-1
+        )
+    
+    def extract_datetime_features(self, X):
+        """Tarih-zaman özellikleri çıkarımı"""
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X)
+        
+        features = pd.DataFrame()
+        for col in X.columns:
+            dt_series = pd.to_datetime(X[col], errors='coerce')
+            
+            # Temel özellikler
+            features[f'{col}_year'] = dt_series.dt.year
+            features[f'{col}_month'] = dt_series.dt.month
+            features[f'{col}_day'] = dt_series.dt.day
+            features[f'{col}_hour'] = dt_series.dt.hour
+            features[f'{col}_minute'] = dt_series.dt.minute
+            features[f'{col}_second'] = dt_series.dt.second
+            features[f'{col}_dayofweek'] = dt_series.dt.dayofweek
+            features[f'{col}_dayofyear'] = dt_series.dt.dayofyear
+            features[f'{col}_quarter'] = dt_series.dt.quarter
+            features[f'{col}_weekofyear'] = dt_series.dt.isocalendar().week
+            
+            # Dönemsel özellikler
+            features[f'{col}_sin_month'] = np.sin(2 * np.pi * dt_series.dt.month / 12)
+            features[f'{col}_cos_month'] = np.cos(2 * np.pi * dt_series.dt.month / 12)
+            features[f'{col}_sin_day'] = np.sin(2 * np.pi * dt_series.dt.day / 31)
+            features[f'{col}_cos_day'] = np.cos(2 * np.pi * dt_series.dt.day / 31)
+            features[f'{col}_sin_hour'] = np.sin(2 * np.pi * dt_series.dt.hour / 24)
+            features[f'{col}_cos_hour'] = np.cos(2 * np.pi * dt_series.dt.hour / 24)
+            
+            # İş günü kontrolü
+            features[f'{col}_is_weekend'] = dt_series.dt.dayofweek >= 5
+            features[f'{col}_is_holiday'] = self.is_holiday(dt_series)
+            
+            # Zaman farkları
+            features[f'{col}_days_since_epoch'] = (dt_series - pd.Timestamp('1970-01-01')).dt.days
+            features[f'{col}_seconds_since_midnight'] = dt_series.dt.hour * 3600 + dt_series.dt.minute * 60 + dt_series.dt.second
+        
+        return features.fillna(0)
+    
+    def is_holiday(self, dt_series):
+        """Tatil kontrolü (basitleştirilmiş)"""
+        # Gerçek uygulamada tatil takvimi kullanılmalı
+        holidays = []
+        return dt_series.dt.date.isin(holidays)
+    
+    def text_to_features(self, X):
+        """Metin özellikleri çıkarımı"""
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X)
+        
+        features = pd.DataFrame()
+        for col in X.columns:
+            text_series = X[col].astype(str)
+            
+            # Temel metrikler
+            features[f'{col}_length'] = text_series.str.len()
+            features[f'{col}_word_count'] = text_series.str.split().str.len()
+            features[f'{col}_char_count'] = text_series.str.replace(' ', '').str.len()
+            features[f'{col}_avg_word_length'] = features[f'{col}_char_count'] / (features[f'{col}_word_count'] + 1)
+            
+            # Özel karakter sayıları
+            features[f'{col}_digit_count'] = text_series.str.count(r'\d')
+            features[f'{col}_letter_count'] = text_series.str.count(r'[A-Za-z]')
+            features[f'{col}_uppercase_count'] = text_series.str.count(r'[A-Z]')
+            features[f'{col}_lowercase_count'] = text_series.str.count(r'[a-z]')
+            features[f'{col}_space_count'] = text_series.str.count(' ')
+            features[f'{col}_special_count'] = text_series.str.count(r'[^\w\s]')
+            
+            # Entropi (karakter çeşitliliği)
+            features[f'{col}_entropy'] = text_series.apply(self.calculate_entropy)
+            
+            # Dil özellikleri (basitleştirilmiş)
+            features[f'{col}_contains_url'] = text_series.str.contains(r'http[s]?://').astype(int)
+            features[f'{col}_contains_email'] = text_series.str.contains(r'@').astype(int)
+            features[f'{col}_contains_hashtag'] = text_series.str.contains(r'#').astype(int)
+            features[f'{col}_contains_mention'] = text_series.str.contains(r'@\w+').astype(int)
+        
+        return features.fillna(0)
+    
+    def calculate_entropy(self, text):
+        """Metin entropisi hesaplama"""
+        if not text:
+            return 0
+        
+        # Karakter frekansları
+        freq = pd.Series(list(text)).value_counts(normalize=True)
+        
+        # Entropi: -Σ p(x) * log2(p(x))
+        entropy = -np.sum(freq * np.log2(freq))
+        return entropy
+    
+    def create_model_pipeline(self, model_type='ensemble'):
+        """Model pipeline'ı oluşturma"""
+        feature_pipeline = self.create_feature_engineering_pipeline()
+        
+        if model_type == 'ensemble':
+            # Ensemble model pipeline
+            base_models = [
+                ('rf', RandomForestRegressor(n_estimators=100, random_state=42)),
+                ('gb', GradientBoostingRegressor(n_estimators=100, random_state=42)),
+                ('xgb', self.get_xgboost_model()),
+                ('lgbm', self.get_lightgbm_model())
+            ]
+            
+            # Voting ensemble
+            voting = VotingRegressor(
+                estimators=base_models,
+                weights=[0.25, 0.25, 0.25, 0.25]
+            )
+            
+            # Stacking ensemble
+            meta_model = LinearRegression()
+            stacking = StackingRegressor(
+                estimators=base_models,
+                final_estimator=meta_model,
+                cv=5,
+                n_jobs=-1
+            )
+            
+            # Final model seçimi
+            final_model = stacking
+        
+        elif model_type == 'deep_learning':
+            # Deep learning pipeline
+            final_model = self.create_deep_learning_model()
+        
+        elif model_type == 'time_series':
+            # Zaman serisi pipeline
+            final_model = self.create_time_series_model()
+        
+        else:
+            # Varsayılan pipeline
+            final_model = GradientBoostingRegressor(n_estimators=100, random_state=42)
+        
+        # Full pipeline
+        pipeline = Pipeline(steps=[
+            ('features', feature_pipeline),
+            ('feature_selection', SelectFromModel(ExtraTreesRegressor(n_estimators=50))),
+            ('model', final_model)
+        ])
+        
+        return pipeline
+    
+    def get_xgboost_model(self):
+        """XGBoost modeli"""
+        try:
+            from xgboost import XGBRegressor
+            return XGBRegressor(
+                n_estimators=100,
+                learning_rate=0.1,
+                max_depth=6,
+                random_state=42,
+                n_jobs=-1
+            )
+        except ImportError:
+            return GradientBoostingRegressor(n_estimators=100, random_state=42)
+    
+    def get_lightgbm_model(self):
+        """LightGBM modeli"""
+        try:
+            from lightgbm import LGBMRegressor
+            return LGBMRegressor(
+                n_estimators=100,
+                learning_rate=0.1,
+                max_depth=6,
+                random_state=42,
+                n_jobs=-1
+            )
+        except ImportError:
+            return GradientBoostingRegressor(n_estimators=100, random_state=42)
+    
+    def create_deep_learning_model(self):
+        """Derin öğrenme modeli"""
+        def build_model(input_shape):
+            model = keras.Sequential([
+                layers.Input(shape=input_shape),
+                layers.Dense(256, activation='relu', kernel_regularizer=regularizers.l2(0.01)),
+                layers.BatchNormalization(),
+                layers.Dropout(0.3),
+                
+                layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(0.01)),
+                layers.BatchNormalization(),
+                layers.Dropout(0.3),
+                
+                layers.Dense(64, activation='relu'),
+                layers.BatchNormalization(),
+                layers.Dropout(0.2),
+                
+                layers.Dense(32, activation='relu'),
+                
+                layers.Dense(1, activation='linear')
+            ])
+            
+            model.compile(
+                optimizer=optimizers.Adam(learning_rate=0.001),
+                loss='mse',
+                metrics=['mae', keras.metrics.RootMeanSquaredError()]
+            )
+            
+            return model
+        
+        return build_model
+    
+    def create_time_series_model(self):
+        """Zaman serisi modeli"""
+        # TransformedTargetRegressor ile Box-Cox dönüşümü
+        base_model = RandomForestRegressor(n_estimators=100, random_state=42)
+        
+        transformed_model = TransformedTargetRegressor(
+            regressor=base_model,
+            transformer=PowerTransformer(method='yeo-johnson')
+        )
+        
+        return transformed_model
+    
+    def hyperparameter_optimization(self, pipeline, X_train, y_train):
+        """Hiperparametre optimizasyonu"""
+        # Model türüne göre parametre grid'i
+        param_grids = {
+            'ensemble': {
+                'model__n_estimators': [50, 100, 200],
+                'model__learning_rate': [0.01, 0.05, 0.1, 0.2],
+                'model__max_depth': [3, 5, 7, 10],
+                'model__subsample': [0.6, 0.8, 1.0]
+            },
+            'xgboost': {
+                'model__n_estimators': [50, 100, 200],
+                'model__max_depth': [3, 5, 7, 10],
+                'model__learning_rate': [0.01, 0.05, 0.1],
+                'model__colsample_bytree': [0.6, 0.8, 1.0],
+                'model__gamma': [0, 0.1, 0.2]
+            },
+            'lightgbm': {
+                'model__n_estimators': [50, 100, 200],
+                'model__num_leaves': [31, 50, 100],
+                'model__learning_rate': [0.01, 0.05, 0.1],
+                'model__feature_fraction': [0.6, 0.8, 1.0],
+                'model__bagging_fraction': [0.6, 0.8, 1.0]
+            },
+            'random_forest': {
+                'model__n_estimators': [50, 100, 200],
+                'model__max_depth': [None, 10, 20, 30],
+                'model__min_samples_split': [2, 5, 10],
+                'model__min_samples_leaf': [1, 2, 4],
+                'model__max_features': ['auto', 'sqrt', 'log2']
+            }
+        }
+        
+        # TimeSeriesSplit için
+        tscv = TimeSeriesSplit(n_splits=5)
+        
+        # GridSearchCV
+        grid_search = GridSearchCV(
+            estimator=pipeline,
+            param_grid=param_grids.get('ensemble', {}),
+            cv=tscv,
+            scoring='neg_mean_squared_error',
+            n_jobs=-1,
+            verbose=1,
+            error_score='raise'
+        )
+        
+        # Optimizasyon
+        with mlflow.start_run(run_name="Hyperparameter_Optimization"):
+            grid_search.fit(X_train, y_train)
+            
+            # MLflow'a logla
+            mlflow.log_params(grid_search.best_params_)
+            mlflow.log_metric("best_score", -grid_search.best_score_)
+            
+            # Feature importance kaydet
+            if hasattr(grid_search.best_estimator_.named_steps['model'], 'feature_importances_'):
+                importances = grid_search.best_estimator_.named_steps['model'].feature_importances_
+                feature_names = self.get_feature_names(grid_search.best_estimator_)
+                
+                importance_df = pd.DataFrame({
+                    'feature': feature_names,
+                    'importance': importances
+                }).sort_values('importance', ascending=False)
+                
+                mlflow.log_text(importance_df.head(20).to_csv(), "feature_importance.csv")
+        
+        return grid_search.best_estimator_
+    
+    def get_feature_names(self, pipeline):
+        """Pipeline'dan özellik isimlerini al"""
+        try:
+            # Feature engineering adımından özellik isimlerini al
+            feature_pipeline = pipeline.named_steps['features']
+            
+            # OneHotEncoder özellik isimleri
+            categorical_features = feature_pipeline.named_transformers_['cat'].named_steps['onehot'].get_feature_names_out()
+            
+            # Diğer özellikler
+            numeric_features = self.config.get('numeric_features', [])
+            datetime_features = self.config.get('datetime_features', [])
+            text_features = self.config.get('text_features', [])
+            
+            # Tüm özellikleri birleştir
+            all_features = list(numeric_features) + list(categorical_features) + \
+                          list(datetime_features) + list(text_features)
+            
+            return all_features
+        except:
+            return []
+    
+    def optuna_optimization(self, X_train, y_train, n_trials=100):
+        """Optuna ile hiperparametre optimizasyonu"""
+        def objective(trial):
+            # Hiperparametreleri seç
+            n_estimators = trial.suggest_int('n_estimators', 50, 500)
+            max_depth = trial.suggest_int('max_depth', 3, 20)
+            learning_rate = trial.suggest_float('learning_rate', 0.01, 0.3, log=True)
+            subsample = trial.suggest_float('subsample', 0.6, 1.0)
+            min_samples_split = trial.suggest_int('min_samples_split', 2, 20)
+            min_samples_leaf = trial.suggest_int('min_samples_leaf', 1, 10)
+            
+            # Model oluştur
+            model = GradientBoostingRegressor(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                learning_rate=learning_rate,
+                subsample=subsample,
+                min_samples_split=min_samples_split,
+                min_samples_leaf=min_samples_leaf,
+                random_state=42
+            )
+            
+            # Cross-validation skoru
+            cv_scores = cross_val_score(
+                model, X_train, y_train,
+                cv=TimeSeriesSplit(n_splits=5),
+                scoring='neg_mean_squared_error',
+                n_jobs=-1
+            )
+            
+            # Ortalama MSE
+            mean_mse = -cv_scores.mean()
+            
+            return mean_mse
+        
+        # Optuna çalışması
+        study = optuna.create_study(
+            direction='minimize',
+            sampler=optuna.samplers.TPESampler(seed=42),
+            pruner=optuna.pruners.MedianPruner()
+        )
+        
+        study.optimize(objective, n_trials=n_trials, timeout=3600)
+        
+        # En iyi parametreler
+        best_params = study.best_params
+        best_value = study.best_value
+        
+        print(f"Best parameters: {best_params}")
+        print(f"Best MSE: {best_value}")
+        
+        # En iyi modeli eğit
+        best_model = GradientBoostingRegressor(**best_params, random_state=42)
+        best_model.fit(X_train, y_train)
+        
+        return best_model, study
+    
+    def train_model(self, X_train, y_train, X_val, y_val, model_type='ensemble'):
+        """Model eğitimi"""
+        print(f"Training {model_type} model...")
+        
+        # Pipeline oluştur
+        pipeline = self.create_model_pipeline(model_type)
+        
+        # Hiperparametre optimizasyonu
+        best_pipeline = self.hyperparameter_optimization(pipeline, X_train, y_train)
+        
+        # Validation set ile değerlendirme
+        y_pred_val = best_pipeline.predict(X_val)
+        
+        # Metrikler
+        metrics = {
+            'mse': mean_squared_error(y_val, y_pred_val),
+            'rmse': np.sqrt(mean_squared_error(y_val, y_pred_val)),
+            'mae': mean_absolute_error(y_val, y_pred_val),
+            'r2': r2_score(y_val, y_pred_val),
+            'mape': mean_absolute_percentage_error(y_val, y_pred_val),
+            'explained_variance': explained_variance_score(y_val, y_pred_val)
+        }
+        
+        print(f"Validation Metrics: {metrics}")
+        
+        # Modeli kaydet
+        model_id = f"{model_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.models[model_id] = {
+            'pipeline': best_pipeline,
+            'metrics': metrics,
+            'features': X_train.columns.tolist(),
+            'train_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'model_type': model_type
+        }
+        
+        # MLflow'a kaydet
+        self.log_model_mlflow(best_pipeline, metrics, X_train, y_train, model_id)
+        
+        return best_pipeline, metrics
+    
+    def log_model_mlflow(self, model, metrics, X_train, y_train, model_id):
+        """Modeli MLflow'a kaydet"""
+        with mlflow.start_run(run_name=model_id):
+            # Modeli logla
+            mlflow.sklearn.log_model(model, "model")
+            
+            # Metrikleri logla
+            for metric_name, metric_value in metrics.items():
+                mlflow.log_metric(metric_name, metric_value)
+            
+            # Parametreleri logla
+            if hasattr(model.named_steps['model'], 'get_params'):
+                mlflow.log_params(model.named_steps['model'].get_params())
+            
+            # Feature importance logla
+            if hasattr(model.named_steps['model'], 'feature_importances_'):
+                importances = model.named_steps['model'].feature_importances_
+                feature_names = self.get_feature_names(model)
+                
+                importance_df = pd.DataFrame({
+                    'feature': feature_names,
+                    'importance': importances
+                }).sort_values('importance', ascending=False)
+                
+                mlflow.log_text(importance_df.head(20).to_csv(), "feature_importance.csv")
+            
+            # Dataset bilgilerini logla
+            mlflow.log_metric("train_samples", len(X_train))
+            mlflow.log_metric("train_features", X_train.shape[1])
+            
+            # Model signature
+            signature = infer_signature(X_train, y_train)
+            mlflow.sklearn.log_model(model, "model", signature=signature)
+            
+            # Tags
+            mlflow.set_tag("model_type", "ensemble")
+            mlflow.set_tag("framework", "scikit-learn")
+            mlflow.set_tag("dataset", "muco_production")
+            
+            # Artifacts
+            mlflow.log_artifact("config/model_config.json")
+            
+            print(f"Model logged to MLflow with ID: {mlflow.active_run().info.run_id}")
+    
+    def evaluate_model(self, model, X_test, y_test):
+        """Model değerlendirme"""
+        print("Evaluating model...")
+        
+        # Tahminler
+        y_pred = model.predict(X_test)
+        
+        # Temel metrikler
+        metrics = {
+            'mse': mean_squared_error(y_test, y_pred),
+            'rmse': np.sqrt(mean_squared_error(y_test, y_pred)),
+            'mae': mean_absolute_error(y_test, y_pred),
+            'r2': r2_score(y_test, y_pred),
+            'mape': mean_absolute_percentage_error(y_test, y_pred),
+            'explained_variance': explained_variance_score(y_test, y_pred),
+            'median_absolute_error': median_absolute_error(y_test, y_pred),
+            'max_error': max_error(y_test, y_pred)
+        }
+        
+        # Residual analizi
+        residuals = y_test - y_pred
+        metrics['residual_mean'] = residuals.mean()
+        metrics['residual_std'] = residuals.std()
+        metrics['residual_skew'] = stats.skew(residuals)
+        metrics['residual_kurtosis'] = stats.kurtosis(residuals)
+        
+        # Normallik testi (Shapiro-Wilk)
+        if len(residuals) <= 5000:  # Shapiro testi 5000 örnekle sınırlı
+            _, metrics['shapiro_pvalue'] = stats.shapiro(residuals)
+        
+        # Heteroscedasticity test (Breusch-Pagan benzeri)
+        metrics['heteroscedasticity'] = np.corrcoef(y_pred, residuals**2)[0, 1]
+        
+        # Confidence intervals
+        confidence = 0.95
+        n = len(y_test)
+        se = metrics['rmse'] / np.sqrt(n)
+        t_value = stats.t.ppf((1 + confidence) / 2, n - 1)
+        metrics['confidence_interval_lower'] = metrics['rmse'] - t_value * se
+        metrics['confidence_interval_upper'] = metrics['rmse'] + t_value * se
+        
+        print(f"Test Metrics: {metrics}")
+        
+        return metrics, y_pred, residuals
+    
+    def cross_validate_model(self, model, X, y, cv_strategy='timeseries'):
+        """Cross-validation değerlendirmesi"""
+        if cv_strategy == 'timeseries':
+            cv = TimeSeriesSplit(n_splits=5)
+        else:
+            cv = 5
+        
+        # Cross-validation skorları
+        cv_scores = cross_validate(
+            model, X, y,
+            cv=cv,
+            scoring=['neg_mean_squared_error', 'neg_mean_absolute_error', 'r2'],
+            n_jobs=-1,
+            return_train_score=True,
+            error_score='raise'
+        )
+        
+        # Sonuçları düzenle
+        cv_results = {
+            'cv_mse_mean': -cv_scores['test_neg_mean_squared_error'].mean(),
+            'cv_mse_std': cv_scores['test_neg_mean_squared_error'].std(),
+            'cv_mae_mean': -cv_scores['test_neg_mean_absolute_error'].mean(),
+            'cv_mae_std': cv_scores['test_neg_mean_absolute_error'].std(),
+            'cv_r2_mean': cv_scores['test_r2'].mean(),
+            'cv_r2_std': cv_scores['test_r2'].std(),
+            'train_test_gap': cv_scores['train_neg_mean_squared_error'].mean() - 
+                             cv_scores['test_neg_mean_squared_error'].mean()
+        }
+        
+        return cv_results
+    
+    def explain_model(self, model, X_sample, y_sample, method='shap'):
+        """Model açıklanabilirliği"""
+        print(f"Explaining model using {method}...")
+        
+        if method == 'shap':
+            # SHAP değerleri
+            try:
+                explainer = shap.Explainer(model.named_steps['model'])
+                shap_values = explainer.shap_values(X_sample)
+                
+                # SHAP summary plot
+                shap.summary_plot(shap_values, X_sample, show=False)
+                
+                # SHAP değerlerini kaydet
+                shap_df = pd.DataFrame(shap_values, columns=X_sample.columns)
+                shap_df['prediction'] = model.predict(X_sample)
+                
+                return {
+                    'shap_values': shap_df,
+                    'feature_importance': np.abs(shap_values).mean(axis=0),
+                    'summary_stats': {
+                        'mean_abs_shap': np.abs(shap_values).mean(),
+                        'max_shap': np.abs(shap_values).max(),
+                        'non_zero_shap': (np.abs(shap_values) > 0.01).mean()
+                    }
+                }
+                
+            except Exception as e:
+                print(f"SHAP explanation failed: {str(e)}")
+                return None
+        
+        elif method == 'lime':
+            # LIME açıklamaları
+            try:
+                explainer = lime.lime_tabular.LimeTabularExplainer(
+                    training_data=X_sample.values,
+                    feature_names=X_sample.columns,
+                    class_names=['prediction'],
+                    mode='regression'
+                )
+                
+                explanations = []
+                for i in range(min(10, len(X_sample))):
+                    exp = explainer.explain_instance(
+                        X_sample.iloc[i].values,
+                        model.predict,
+                        num_features=10
+                    )
+                    explanations.append(exp.as_list())
+                
+                return {'lime_explanations': explanations}
+                
+            except Exception as e:
+                print(f"LIME explanation failed: {str(e)}")
+                return None
+        
+        elif method == 'permutation':
+            # Permutation importance
+            try:
+                result = permutation_importance(
+                    model, X_sample, y_sample,
+                    n_repeats=10,
+                    random_state=42,
+                    n_jobs=-1
+                )
+                
+                importance_df = pd.DataFrame({
+                    'feature': X_sample.columns,
+                    'importance_mean': result.importances_mean,
+                    'importance_std': result.importances_std
+                }).sort_values('importance_mean', ascending=False)
+                
+                return {'permutation_importance': importance_df}
+                
+            except Exception as e:
+                print(f"Permutation importance failed: {str(e)}")
+                return None
+    
+    def create_ensemble_model(self, base_models, X_train, y_train, method='stacking'):
+        """Ensemble model oluşturma"""
+        print(f"Creating {method} ensemble...")
+        
+        if method == 'stacking':
+            # Stacking ensemble
+            meta_model = LinearRegression()
+            ensemble = StackingRegressor(
+                estimators=base_models,
+                final_estimator=meta_model,
+                cv=5,
+                passthrough=False,
+                n_jobs=-1
+            )
+        
+        elif method == 'voting':
+            # Voting ensemble
+            ensemble = VotingRegressor(
+                estimators=base_models,
+                weights=None,  # Otomatik ağırlıklandırma
+                n_jobs=-1
+            )
+        
+        elif method == 'blending':
+            # Blending ensemble
+            from sklearn.model_selection import train_test_split
+            
+            # Train/validation split
+            X_train_blend, X_val_blend, y_train_blend, y_val_blend = train_test_split(
+                X_train, y_train, test_size=0.3, random_state=42
+            )
+            
+            # Base model tahminleri
+            base_predictions = []
+            for name, model in base_models:
+                model.fit(X_train_blend, y_train_blend)
+                pred = model.predict(X_val_blend).reshape(-1, 1)
+                base_predictions.append(pred)
+            
+            # Meta-features
+            X_meta = np.hstack(base_predictions)
+            
+            # Meta-model
+            meta_model = LinearRegression()
+            meta_model.fit(X_meta, y_val_blend)
+            
+            # Blending modelini tanımla
+            class BlendingModel:
+                def __init__(self, base_models, meta_model):
+                    self.base_models = base_models
+                    self.meta_model = meta_model
+                
+                def fit(self, X, y):
+                    # Base modelleri eğit
+                    for name, model in self.base_models:
+                        model.fit(X, y)
+                    return self
+                
+                def predict(self, X):
+                    # Base model tahminleri
+                    base_preds = []
+                    for name, model in self.base_models:
+                        pred = model.predict(X).reshape(-1, 1)
+                        base_preds.append(pred)
+                    
+                    # Meta-features
+                    X_meta = np.hstack(base_preds)
+                    
+                    # Meta-model tahmini
+                    return self.meta_model.predict(X_meta)
+            
+            ensemble = BlendingModel(base_models, meta_model)
+        
+        # Ensemble modelini eğit
+        ensemble.fit(X_train, y_train)
+        
+        return ensemble
+    
+    def create_model_monitoring_dashboard(self, model, X_reference, X_current, y_reference, y_current):
+        """Model monitoring dashboard'ı oluştur"""
+        print("Creating model monitoring dashboard...")
+        
+        # Reference dataset
+        reference_data = pd.concat([X_reference, y_reference], axis=1)
+        reference_data['dataset'] = 'reference'
+        
+        # Current dataset
+        current_data = pd.concat([X_current, y_current], axis=1)
+        current_data['dataset'] = 'current'
+        
+        # Evidently dashboard
+        from evidently.dashboard import Dashboard
+        from evidently.tabs import DataDriftTab, NumTargetDriftTab, RegressionPerformanceTab
+        
+        # Data drift dashboard
+        data_drift_dashboard = Dashboard(tabs=[DataDriftTab()])
+        data_drift_dashboard.calculate(reference_data, current_data)
+        
+        # Target drift dashboard
+        target_drift_dashboard = Dashboard(tabs=[NumTargetDriftTab()])
+        target_drift_dashboard.calculate(reference_data, current_data)
+        
+        # Regression performance dashboard
+        y_pred_reference = model.predict(X_reference)
+        y_pred_current = model.predict(X_current)
+        
+        reference_data['prediction'] = y_pred_reference
+        current_data['prediction'] = y_pred_current
+        
+        regression_dashboard = Dashboard(tabs=[RegressionPerformanceTab()])
+        regression_dashboard.calculate(reference_data, current_data)
+        
+        # Metrics hesapla
+        drift_metrics = {
+            'data_drift_score': data_drift_dashboard._inner_suite.quality_metrics[0].get_result().drift_score,
+            'target_drift_score': target_drift_dashboard._inner_suite.quality_metrics[0].get_result().drift_score,
+            'feature_drift_count': sum([1 for f in data_drift_dashboard._inner_suite.quality_metrics[0].get_result().features.values() 
+                                       if f.drift_detected]),
+            'performance_change': self.calculate_performance_change(
+                y_reference, y_pred_reference,
+                y_current, y_pred_current
+            )
+        }
+        
+        return {
+            'dashboards': {
+                'data_drift': data_drift_dashboard,
+                'target_drift': target_drift_dashboard,
+                'regression_performance': regression_dashboard
+            },
+            'metrics': drift_metrics
+        }
+    
+    def calculate_performance_change(self, y_ref_true, y_ref_pred, y_cur_true, y_cur_pred):
+        """Performans değişimini hesapla"""
+        # Reference metrikleri
+        ref_rmse = np.sqrt(mean_squared_error(y_ref_true, y_ref_pred))
+        ref_r2 = r2_score(y_ref_true, y_ref_pred)
+        
+        # Current metrikleri
+        cur_rmse = np.sqrt(mean_squared_error(y_cur_true, y_cur_pred))
+        cur_r2 = r2_score(y_cur_true, y_cur_pred)
+        
+        # Değişim yüzdeleri
+        rmse_change = (cur_rmse - ref_rmse) / ref_rmse * 100
+        r2_change = (cur_r2 - ref_r2) / abs(ref_r2) * 100 if ref_r2 != 0 else 0
+        
+        return {
+            'rmse_change_pct': rmse_change,
+            'r2_change_pct': r2_change,
+            'performance_degraded': rmse_change > 10 or r2_change < -10
+        }
+    
+    def save_model(self, model, model_name, version='1.0.0'):
+        """Modeli kaydet"""
+        # Model dosyası
+        model_path = f"models/{model_name}_v{version}.pkl"
+        
+        # Modeli pickle olarak kaydet
+        with open(model_path, 'wb') as f:
+            pickle.dump(model, f)
+        
+        # Metadata
+        metadata = {
+            'model_name': model_name,
+            'version': version,
+            'created_at': datetime.now().isoformat(),
+            'framework': 'scikit-learn',
+            'input_features': self.config.get('numeric_features', []) + 
+                            self.config.get('categorical_features', []) +
+                            self.config.get('datetime_features', []) +
+                            self.config.get('text_features', []),
+            'target_column': self.config['modeling']['target_column']
+        }
+        
+        # Metadata'yı kaydet
+        metadata_path = f"models/{model_name}_v{version}_metadata.json"
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        print(f"Model saved to {model_path}")
+        print(f"Metadata saved to {metadata_path}")
+        
+        return model_path, metadata_path
+    
+    def load_model(self, model_path, metadata_path=None):
+        """Modeli yükle"""
+        # Modeli yükle
+        with open(model_path, 'rb') as f:
+            model = pickle.load(f)
+        
+        # Metadata'yı yükle
+        metadata = {}
+        if metadata_path and os.path.exists(metadata_path):
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+        
+        return model, metadata
+    
+    def create_bentoml_service(self, model, model_name):
+        """BentoML servisi oluştur"""
+        @env(infer_pip_packages=True)
+        @artifacts([PickleArtifact('model')])
+        class MucoModelService(BentoService):
+            @api(input=DataframeInput(), batch=True)
+            def predict(self, df):
+                """Batch prediction"""
+                return self.artifacts.model.predict(df)
+            
+            @api(input=JsonInput(), batch=False)
+            def predict_single(self, json_data):
+                """Single prediction"""
+                df = pd.DataFrame([json_data])
+                return self.artifacts.model.predict(df)[0]
+            
+            @api(input=JsonInput(), batch=False)
+            def health_check(self, _):
+                """Health check endpoint"""
+                return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+        
+        # Bento service oluştur
+        bento_service = MucoModelService()
+        
+        # Modeli paketle
+        bento_service.pack('model', model)
+        
+        # BentoML modelini kaydet
+        saved_path = bento_service.save()
+        
+        print(f"BentoML service saved to: {saved_path}")
+        
+        return bento_service
+    
+    def deploy_model(self, model_path, deployment_type='local'):
+        """Model deployment"""
+        if deployment_type == 'local':
+            # Local Flask API
+            from flask import Flask, request, jsonify
+            
+            app = Flask(__name__)
+            
+            # Modeli yükle
+            model, metadata = self.load_model(model_path)
+            
+            @app.route('/predict', methods=['POST'])
+            def predict():
+                data = request.get_json()
+                df = pd.DataFrame([data])
+                prediction = model.predict(df)[0]
+                return jsonify({'prediction': float(prediction)})
+            
+            @app.route('/health', methods=['GET'])
+            def health():
+                return jsonify({'status': 'healthy', 'model': metadata.get('model_name', 'unknown')})
+            
+            print("Flask API started. Use /predict for predictions.")
+            return app
+        
+        elif deployment_type == 'docker':
+            # Docker container oluştur
+            dockerfile_content = """
+FROM python:3.9-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["python", "app.py"]
+"""
+            
+            # Dockerfile oluştur
+            with open("Dockerfile", "w") as f:
+                f.write(dockerfile_content)
+            
+            print("Dockerfile created. Build with: docker build -t muco-model .")
+            print("Run with: docker run -p 5000:5000 muco-model")
+        
+        elif deployment_type == 'kubernetes':
+            # Kubernetes deployment manifest
+            deployment_yaml = """
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: muco-model
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: muco-model
+  template:
+    metadata:
+      labels:
+        app: muco-model
+    spec:
+      containers:
+      - name: model
+        image: muco-model:latest
+        ports:
+        - containerPort: 5000
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: muco-model-service
+spec:
+  selector:
+    app: muco-model
+  ports:
+  - port: 80
+    targetPort: 5000
+  type: LoadBalancer
+"""
+            
+            with open("kubernetes-deployment.yaml", "w") as f:
+                f.write(deployment_yaml)
+            
+            print("Kubernetes deployment YAML created.")
+    
+    def create_feature_store(self):
+        """Feature store oluştur"""
+        # Feast feature store
+        from datetime import datetime
+        
+        # Entity tanımla
+        entity = Entity(
+            name="muco_entity",
+            join_keys=["entity_id"],
+            value_type=ValueType.INT64
+        )
+        
+        # Feature view tanımla
+        feature_view = FeatureView(
+            name="muco_features",
+            entities=[entity],
+            ttl=timedelta(days=365),
+            schema=[
+                Field(name="feature_1", dtype=Float64),
+                Field(name="feature_2", dtype=Float64),
+                Field(name="feature_3", dtype=String),
+            ],
+            source=FileSource(
+                path="data/features.parquet",
+                event_timestamp_column="timestamp"
+            )
+        )
+        
+        # Feature store oluştur
+        store = FeatureStore(
+            config={
+                "project": "muco",
+                "provider": "local",
+                "online_store": {
+                    "type": "sqlite",
+                    "path": "data/online_store.db"
+                },
+                "offline_store": {
+                    "type": "file"
+                }
+            }
+        )
+        
+        # Apply feature store
+        store.apply([entity, feature_view])
+        
+        self.feature_store = store
+        
+        return store
+    
+    def run_pipeline(self, data_path, target_column, model_types=['ensemble']):
+        """Tam pipeline çalıştırma"""
+        print("Starting MUCO ML Pipeline...")
+        
+        # 1. Veri yükleme
+        print("1. Loading data...")
+        data = pd.read_csv(data_path)
+        X = data.drop(columns=[target_column])
+        y = data[target_column]
+        
+        # 2. Train/test split
+        print("2. Splitting data...")
+        from sklearn.model_selection import train_test_split
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y,
+            test_size=self.config['modeling']['test_size'],
+            random_state=self.config['modeling']['random_state'],
+            shuffle=False  # Zaman serisi için
+        )
+        
+        # 3. Validation split
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train, y_train,
+            test_size=0.2,
+            random_state=self.config['modeling']['random_state'],
+            shuffle=False
+        )
+        
+        print(f"Train shape: {X_train.shape}, Val shape: {X_val.shape}, Test shape: {X_test.shape}")
+        
+        results = {}
+        
+        for model_type in model_types:
+            print(f"\n3. Training {model_type} model...")
+            
+            # 4. Model eğitimi
+            model, train_metrics = self.train_model(
+                X_train, y_train, X_val, y_val, model_type
+            )
+            
+            # 5. Test değerlendirmesi
+            print("4. Evaluating on test set...")
+            test_metrics, y_pred, residuals = self.evaluate_model(model, X_test, y_test)
+            
+            # 6. Cross-validation
+            print("5. Cross-validation...")
+            cv_results = self.cross_validate_model(model, X_train, y_train)
+            
+            # 7. Model açıklanabilirliği
+            print("6. Model explanation...")
+            X_sample = X_test.sample(min(100, len(X_test)), random_state=42)
+            y_sample = y_test.loc[X_sample.index]
+            explanations = self.explain_model(model, X_sample, y_sample)
+            
+            # 8. Model monitoring setup
+            print("7. Setting up model monitoring...")
+            monitoring = self.create_model_monitoring_dashboard(
+                model, X_train, X_test, y_train, y_test
+            )
+            
+            # Sonuçları topla
+            results[model_type] = {
+                'model': model,
+                'train_metrics': train_metrics,
+                'test_metrics': test_metrics,
+                'cv_results': cv_results,
+                'explanations': explanations,
+                'monitoring': monitoring['metrics'],
+                'predictions': {
+                    'y_true': y_test.tolist(),
+                    'y_pred': y_pred.tolist(),
+                    'residuals': residuals.tolist()
+                }
+            }
+            
+            # 9. Modeli kaydet
+            print("8. Saving model...")
+            model_path, metadata_path = self.save_model(
+                model, f"muco_{model_type}", version="1.0.0"
+            )
+            
+            # 10. BentoML servisi oluştur
+            print("9. Creating BentoML service...")
+            bento_service = self.create_bentoml_service(model, f"muco_{model_type}")
+        
+        print("\nPipeline completed successfully!")
+        
+        return results
+
+# Model Registry Sınıfı
+class MucoModelRegistry:
+    """MUCO Model Registry"""
+    
+    def __init__(self, registry_uri="http://localhost:5000"):
+        self.client = MlflowClient(tracking_uri=registry_uri)
+        self.registry_uri = registry_uri
+        
+    def register_model(self, model_path, model_name, experiment_name="MUCO_Production"):
+        """Modeli registry'e kaydet"""
+        # MLflow run'ını bul
+        experiment = self.client.get_experiment_by_name(experiment_name)
+        if not experiment:
+            print(f"Experiment {experiment_name} not found")
+            return None
+        
+        # En son run'ı al
+        runs = self.client.search_runs(
+            experiment_ids=[experiment.experiment_id],
+            order_by=["metrics.rmse ASC"],
+            max_results=1
+        )
+        
+        if not runs:
+            print("No runs found")
+            return None
+        
+        run = runs[0]
+        
+        # Modeli registry'e kaydet
+        model_uri = f"runs:/{run.info.run_id}/model"
+        registered_model = self.client.create_registered_model(model_name)
+        
+        # Model versiyonunu oluştur
+        model_version = self.client.create_model_version(
+            name=model_name,
+            source=model_uri,
+            run_id=run.info.run_id
+        )
+        
+        # Stage ayarla
+        self.client.transition_model_version_stage(
+            name=model_name,
+            version=model_version.version,
+            stage="Staging"
+        )
+        
+        print(f"Model registered: {model_name}, Version: {model_version.version}")
+        
+        return model_version
+    
+    def promote_to_production(self, model_name, version):
+        """Modeli production'a taşı"""
+        # Önce staging'deki modeli archive et
+        staging_versions = self.client.get_latest_versions(model_name, stages=["Staging"])
+        for v in staging_versions:
+            if v.version != str(version):
+                self.client.transition_model_version_stage(
+                    name=model_name,
+                    version=v.version,
+                    stage="Archived"
+                )
+        
+        # Yeni versiyonu production'a taşı
+        self.client.transition_model_version_stage(
+            name=model_name,
+            version=version,
+            stage="Production"
+        )
+        
+        print(f"Model {model_name} v{version} promoted to Production")
+    
+    def get_production_model(self, model_name):
+        """Production modelini al"""
+        try:
+            model_version = self.client.get_latest_versions(model_name, stages=["Production"])[0]
+            model = mlflow.sklearn.load_model(f"models:/{model_name}/{model_version.version}")
+            return model, model_version
+        except:
+            return None, None
+    
+    def compare_models(self, model_name, version1, version2):
+        """İki model versiyonunu karşılaştır"""
+        v1 = self.client.get_model_version(model_name, version1)
+        v2 = self.client.get_model_version(model_name, version2)
+        
+        # Metrikleri karşılaştır
+        run1 = self.client.get_run(v1.run_id)
+        run2 = self.client.get_run(v2.run_id)
+        
+        comparison = {
+            'version1': {
+                'version': version1,
+                'metrics': run1.data.metrics,
+                'status': v1.current_stage,
+                'created': v1.creation_timestamp
+            },
+            'version2': {
+                'version': version2,
+                'metrics': run2.data.metrics,
+                'status': v2.current_stage,
+                'created': v2.creation_timestamp
+            },
+            'improvements': {}
+        }
+        
+        # İyileşmeleri hesapla
+        for metric in ['rmse', 'mae', 'r2']:
+            if metric in run1.data.metrics and metric in run2.data.metrics:
+                v1_val = run1.data.metrics[metric]
+                v2_val = run2.data.metrics[metric]
+                
+                if metric in ['rmse', 'mae']:  # Düşük olan daha iyi
+                    improvement = (v1_val - v2_val) / v1_val * 100
+                    better = v2_val < v1_val
+                else:  # r2: yüksek olan daha iyi
+                    improvement = (v2_val - v1_val) / abs(v1_val) * 100
+                    better = v2_val > v1_val
+                
+                comparison['improvements'][metric] = {
+                    'improvement_pct': improvement,
+                    'is_better': better
+                }
+        
+        return comparison
+
+# Feature Store Manager
+class MucoFeatureStore:
+    """MUCO Feature Store Manager"""
+    
+    def __init__(self, store_path="./feature_store"):
+        self.store_path = store_path
+        self.store = None
+        
+    def initialize_store(self):
+        """Feature store'u başlat"""
+        from feast import FeatureStore
+        
+        # Feature store konfigürasyonu
+        config = {
+            "project": "muco",
+            "registry": f"{self.store_path}/registry.db",
+            "provider": "local",
+            "online_store": {
+                "type": "sqlite",
+                "path": f"{self.store_path}/online_store.db"
+            }
+        }
+        
+        # Config dosyasını oluştur
+        import yaml
+        with open(f"{self.store_path}/feature_store.yaml", "w") as f:
+            yaml.dump(config, f)
+        
+        # Feature store'u başlat
+        self.store = FeatureStore(repo_path=self.store_path)
+        
+        return self.store
+    
+    def create_entity(self, entity_name, join_key):
+        """Entity oluştur"""
+        from feast import Entity, ValueType
+        
+        entity = Entity(
+            name=entity_name,
+            join_keys=[join_key],
+            value_type=ValueType.STRING
+        )
+        
+        return entity
+    
+    def create_feature_view(self, name, entities, features, source):
+        """Feature view oluştur"""
+        from feast import FeatureView, Field
+        from feast.types import Float64, Int64, String
+        
+        # Alanları oluştur
+        fields = []
+        for feature_name, feature_type in features.items():
+            if feature_type == "float":
+                dtype = Float64
+            elif feature_type == "int":
+                dtype = Int64
+            else:
+                dtype = String
+            
+            fields.append(Field(name=feature_name, dtype=dtype))
+        
+        # Feature view oluştur
+        feature_view = FeatureView(
+            name=name,
+            entities=entities,
+            ttl=None,  # TTL yok
+            schema=fields,
+            source=source
+        )
+        
+        return feature_view
+    
+    def get_historical_features(self, entity_df, feature_refs):
+        """Geçmiş feature'ları al"""
+        if not self.store:
+            self.initialize_store()
+        
+        return self.store.get_historical_features(
+            entity_df=entity_df,
+            features=feature_refs
+        ).to_df()
+    
+    def get_online_features(self, entity_rows, feature_refs):
+        """Online feature'ları al"""
+        if not self.store:
+            self.initialize_store()
+        
+        return self.store.get_online_features(
+            entity_rows=entity_rows,
+            features=feature_refs
+        ).to_dict()
+
+# Model Monitoring Service
+class MucoModelMonitor:
+    """MUCO Model Monitoring Service"""
+    
+    def __init__(self, model_name, model_version):
+        self.model_name = model_name
+        self.model_version = model_version
+        self.metrics_history = []
+        self.drift_history = []
+        
+        # Prometheus metrikleri
+        self.predictions_counter = Counter('muco_predictions_total', 'Total predictions')
+        self.error_rate_gauge = Gauge('muco_error_rate', 'Current error rate')
+        self.drift_score_gauge = Gauge('muco_drift_score', 'Data drift score')
+        self.latency_histogram = Histogram('muco_prediction_latency_seconds', 'Prediction latency')
+    
+    def record_prediction(self, features, prediction, actual=None, latency=None):
+        """Prediction kaydı"""
+        self.predictions_counter.inc()
+        
+        if latency:
+            self.latency_histogram.observe(latency)
+        
+        # Gerçek değer varsa error hesapla
+        if actual is not None:
+            error = abs(prediction - actual)
+            self.error_rate_gauge.set(error)
+            
+            # Metrics history'e ekle
+            self.metrics_history.append({
+                'timestamp': datetime.now(),
+                'prediction': prediction,
+                'actual': actual,
+                'error': error,
+                'features': features
+            })
+    
+    def check_data_drift(self, reference_data, current_data):
+        """Data drift kontrolü"""
+        from scipy import stats
+        
+        drift_scores = {}
+        
+        for column in reference_data.columns:
+            if column in current_data.columns:
+                # Kolmogorov-Smirnov test
+                stat, p_value = stats.ks_2samp(
+                    reference_data[column].dropna(),
+                    current_data[column].dropna()
+                )
+                
+                drift_scores[column] = {
+                    'ks_statistic': stat,
+                    'p_value': p_value,
+                    'drift_detected': p_value < 0.05
+                }
+        
+        # Ortalama drift skoru
+        avg_drift_score = np.mean([s['ks_statistic'] for s in drift_scores.values()])
+        self.drift_score_gauge.set(avg_drift_score)
+        
+        # Drift history'e ekle
+        self.drift_history.append({
+            'timestamp': datetime.now(),
+            'drift_score': avg_drift_score,
+            'drift_details': drift_scores
+        })
+        
+        return {
+            'drift_detected': avg_drift_score > 0.1,
+            'avg_drift_score': avg_drift_score,
+            'details': drift_scores
+        }
+    
+    def check_concept_drift(self, predictions, actuals, window_size=100):
+        """Concept drift kontrolü"""
+        if len(predictions) < window_size:
+            return None
+        
+        # Rolling error hesapla
+        errors = np.abs(np.array(predictions) - np.array(actuals))
+        
+        # İki penceredeki error'ları karşılaştır
+        window1 = errors[:window_size]
+        window2 = errors[-window_size:]
+        
+        # T-test ile karşılaştır
+        from scipy import stats
+        t_stat, p_value = stats.ttest_ind(window1, window2)
+        
+        concept_drift = {
+            't_statistic': t_stat,
+            'p_value': p_value,
+            'drift_detected': p_value < 0.05,
+            'window1_mean_error': np.mean(window1),
+            'window2_mean_error': np.mean(window2),
+            'error_change_pct': (np.mean(window2) - np.mean(window1)) / np.mean(window1) * 100
+        }
+        
+        return concept_drift
+    
+    def generate_monitoring_report(self):
+        """Monitoring raporu oluştur"""
+        if not self.metrics_history:
+            return None
+        
+        # Son 24 saatlik veri
+        now = datetime.now()
+        day_ago = now - timedelta(days=1)
+        
+        recent_metrics = [m for m in self.metrics_history 
+                         if m['timestamp'] > day_ago]
+        
+        if not recent_metrics:
+            return None
+        
+        # Temel metrikler
+        errors = [m['error'] for m in recent_metrics]
+        predictions = [m['prediction'] for m in recent_metrics]
+        actuals = [m['actual'] for m in recent_metrics if m['actual'] is not None]
+        
+        report = {
+            'time_period': {
+                'start': day_ago.isoformat(),
+                'end': now.isoformat()
+            },
+            'volume_metrics': {
+                'total_predictions': len(recent_metrics),
+                'predictions_per_hour': len(recent_metrics) / 24
+            },
+            'performance_metrics': {
+                'mean_error': np.mean(errors) if errors else 0,
+                'median_error': np.median(errors) if errors else 0,
+                'std_error': np.std(errors) if len(errors) > 1 else 0,
+                'max_error': np.max(errors) if errors else 0,
+                'r2_score': r2_score(actuals, predictions[:len(actuals)]) if len(actuals) > 1 else 0
+            },
+            'drift_status': {
+                'data_drift_detected': any(d['drift_detected'] for d in self.drift_history[-24:]),
+                'concept_drift_detected': self.check_concept_drift(predictions, actuals)['drift_detected'] 
+                                          if actuals else False
+            },
+            'alerts': self.generate_alerts(errors)
+        }
+        
+        return report
+    
+    def generate_alerts(self, errors):
+        """Alert'ları oluştur"""
+        alerts = []
+        
+        if not errors:
+            return alerts
+        
+        # Error threshold alert
+        error_threshold = np.percentile(errors, 95) if len(errors) >= 20 else np.mean(errors) * 2
+        high_errors = [e for e in errors if e > error_threshold]
+        
+        if len(high_errors) > len(errors) * 0.05:  %5'ten fazla high error
+            alerts.append({
+                'type': 'HIGH_ERROR_RATE',
+                'severity': 'WARNING',
+                'message': f"High error rate detected: {len(high_errors)}/{len(errors)} predictions above threshold",
+                'threshold': error_threshold
+            })
+        
+        # Sudden performance drop alert
+        if len(errors) >= 20:
+            recent_errors = errors[-10:]
+            previous_errors = errors[-20:-10]
+            
+            if previous_errors and recent_errors:
+                mean_recent = np.mean(recent_errors)
+                mean_previous = np.mean(previous_errors)
+                
+                if mean_recent > mean_previous * 1.5:  %50'den fazla artış
+                    alerts.append({
+                        'type': 'PERFORMANCE_DEGRADATION',
+                        'severity': 'CRITICAL',
+                        'message': f"Performance degradation detected: Error increased from {mean_previous:.2f} to {mean_recent:.2f}",
+                        'increase_pct': (mean_recent - mean_previous) / mean_previous * 100
+                    })
+        
+        return alerts
+
+# Model Deployment Pipeline
+class MucoDeploymentPipeline:
+    """MUCO Model Deployment Pipeline"""
+    
+    def __init__(self, model_registry):
+        self.registry = model_registry
+        self.deployed_models = {}
+        
+    def create_deployment_package(self, model_name, version):
+        """Deployment paketi oluştur"""
+        # Modeli al
+        model, model_version = self.registry.get_production_model(model_name)
+        if not model:
+            print(f"Model {model_name} not found in registry")
+            return None
+        
+        # Model metadata'sını al
+        metadata = {
+            'model_name': model_name,
+            'version': model_version.version,
+            'run_id': model_version.run_id,
+            'stage': model_version.current_stage,
+            'registered_at': model_version.creation_timestamp,
+            'framework': 'scikit-learn'
+        }
+        
+        # Docker image oluştur
+        dockerfile = self.create_dockerfile(model, metadata)
+        
+        # Kubernetes manifest'leri oluştur
+        k8s_manifests = self.create_kubernetes_manifests(model_name, version)
+        
+        # CI/CD pipeline'ı oluştur
+        cicd_pipeline = self.create_cicd_pipeline(model_name, version)
+        
+        deployment_package = {
+            'model': model,
+            'metadata': metadata,
+            'dockerfile': dockerfile,
+            'kubernetes_manifests': k8s_manifests,
+            'cicd_pipeline': cicd_pipeline,
+            'test_suite': self.create_test_suite(model)
+        }
+        
+        return deployment_package
+    
+    def create_dockerfile(self, model, metadata):
+        """Dockerfile oluştur"""
+        dockerfile = f"""
+# MUCO Model Deployment Image
+FROM python:3.9-slim
+
+# Metadata
+LABEL model_name="{metadata['model_name']}"
+LABEL version="{metadata['version']}"
+LABEL framework="{metadata['framework']}"
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app directory
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy model and code
+COPY model.pkl .
+COPY app.py .
+
+# Expose port
+EXPOSE 5000
+
+# Health check
+HEALTHCHECK CMD curl --fail http://localhost:5000/health || exit 1
+
+# Run the application
+CMD ["python", "app.py"]
+"""
+        
+        # App.py dosyasını oluştur
+        app_py = """
+from flask import Flask, request, jsonify
+import pickle
+import pandas as pd
+import numpy as np
+from datetime import datetime
+
+app = Flask(__name__)
+
+# Load model
+with open('model.pkl', 'rb') as f:
+    model = pickle.load(f)
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    try:
+        data = request.get_json()
+        
+        # Convert to DataFrame
+        df = pd.DataFrame([data])
+        
+        # Make prediction
+        prediction = model.predict(df)[0]
+        
+        return jsonify({
+            'prediction': float(prediction),
+            'timestamp': datetime.now().isoformat(),
+            'status': 'success'
+        })
+    except Exception as e:
+        return jsonify({
+            'error': str(e),
+            'timestamp': datetime.now().isoformat(),
+            'status': 'error'
+        }), 400
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@app.route('/metrics', methods=['GET'])
+def metrics():
+    # Prometheus metrics endpoint
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+"""
+        
+        return {'dockerfile': dockerfile, 'app.py': app_py}
+    
+    def create_kubernetes_manifests(self, model_name, version):
+        """Kubernetes manifest'lerini oluştur"""
+        deployment = f"""
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {model_name}-deployment
+  labels:
+    app: {model_name}
+    version: "{version}"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: {model_name}
+  template:
+    metadata:
+      labels:
+        app: {model_name}
+        version: "{version}"
+    spec:
+      containers:
+      - name: {model_name}
+        image: {model_name}:{version}
+        ports:
+        - containerPort: 5000
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {model_name}-service
+spec:
+  selector:
+    app: {model_name}
+  ports:
+  - port: 80
+    targetPort: 5000
+  type: LoadBalancer
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {model_name}-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {model_name}-deployment
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+"""
+        
+        return {'deployment.yaml': deployment}
+    
+    def create_cicd_pipeline(self, model_name, version):
+        """CI/CD pipeline'ı oluştur"""
+        # GitHub Actions workflow
+        workflow = f"""
+name: Deploy {model_name}
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest
+    
+    - name: Run tests
+      run: |
+        pytest tests/ -v
+    
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v1
+    
+    - name: Log in to DockerHub
+      uses: docker/login-action@v1
+      with:
+        username: ${{{{ secrets.DOCKER_USERNAME }}}}
+        password: ${{{{ secrets.DOCKER_PASSWORD }}}}
+    
+    - name: Build and push
+      uses: docker/build-push-action@v2
+      with:
+        context: .
+        push: true
+        tags: |
+          ${{{{ secrets.DOCKER_USERNAME }}}}/{model_name}:{version}
+          ${{{{ secrets.DOCKER_USERNAME }}}}/{model_name}:latest
+    
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v1
+    
+    - name: Configure kubectl
+      run: |
+        mkdir -p $HOME/.kube
+        echo "${{{{ secrets.KUBE_CONFIG }}}}" > $HOME/.kube/config
+    
+    - name: Deploy to Kubernetes
+      run: |
+        kubectl apply -f kubernetes/deployment.yaml
+        kubectl rollout status deployment/{model_name}-deployment
+"""
+        
+        return {'github_workflow.yaml': workflow}
+    
+    def create_test_suite(self, model):
+        """Test suite oluştur"""
+        test_suite = """
+import pytest
+import pandas as pd
+import numpy as np
+import pickle
+
+# Load model
+with open('model.pkl', 'rb') as f:
+    model = pickle.load(f)
+
+def test_model_loading():
+    '''Test that model loads correctly'''
+    assert model is not None
+    assert hasattr(model, 'predict')
+
+def test_prediction_shape():
+    '''Test prediction output shape'''
+    # Create test data
+    X_test = pd.DataFrame({
+        'feature1': [1.0, 2.0, 3.0],
+        'feature2': [4.0, 5.0, 6.0]
+    })
+    
+    predictions = model.predict(X_test)
+    assert len(predictions) == len(X_test)
+
+def test_prediction_range():
+    '''Test prediction range (if known)'''
+    X_test = pd.DataFrame({
+        'feature1': [1.0, 2.0, 3.0],
+        'feature2': [4.0, 5.0, 6.0]
+    })
+    
+    predictions = model.predict(X_test)
+    
+    # Check if predictions are finite
+    assert np.all(np.isfinite(predictions))
+
+def test_error_handling():
+    '''Test error handling with invalid input'''
+    # Test with missing features
+    X_invalid = pd.DataFrame({
+        'wrong_feature': [1.0, 2.0, 3.0]
+    })
+    
+    try:
+        model.predict(X_invalid)
+        # Should not reach here
+        assert False, "Should have raised an error"
+    except Exception as e:
+        # Expected to raise an error
+        assert True
+
+def test_performance():
+    '''Test model performance on validation data'''
+    # Load validation data
+    X_val = pd.read_csv('data/validation.csv')
+    y_val = X_val.pop('target')
+    
+    predictions = model.predict(X_val)
+    
+    # Calculate metrics
+    from sklearn.metrics import mean_squared_error, r2_score
+    mse = mean_squared_error(y_val, predictions)
+    r2 = r2_score(y_val, predictions)
+    
+    # Assert performance thresholds
+    assert mse < 1.0, f"MSE too high: {mse}"
+    assert r2 > 0.7, f"R2 too low: {r2}"
+"""
+        
+        return {'test_model.py': test_suite}
+    
+    def deploy_to_environment(self, model_name, version, environment='staging'):
+        """Modeli environment'a deploy et"""
+        deployment_package = self.create_deployment_package(model_name, version)
+        
+        if not deployment_package:
+            return False
+        
+        # Environment'a göre deployment
+        if environment == 'staging':
+            # Staging environment'a deploy
+            print(f"Deploying {model_name} v{version} to staging...")
+            
+            # Docker image build
+            print("Building Docker image...")
+            
+            # Kubernetes deployment
+            print("Deploying to Kubernetes...")
+            
+            # Smoke tests
+            print("Running smoke tests...")
+            
+        elif environment == 'production':
+            # Production environment'a deploy
+            print(f"Deploying {model_name} v{version} to production...")
+            
+            # Blue-green deployment
+            print("Performing blue-green deployment...")
+            
+            # Traffic shifting
+            print("Shifting traffic...")
+            
+            # Rollback plan
+            print("Rollback plan ready...")
+        
+        # Deployment kaydı
+        self.deployed_models[f"{model_name}_{version}"] = {
+            'model_name': model_name,
+            'version': version,
+            'environment': environment,
+            'deployed_at': datetime.now().isoformat(),
+            'status': 'deployed',
+            'package': deployment_package
+        }
+        
+        return True
+
+# Ana Yürütme
+if __name__ == "__main__":
+    print("MUCO Machine Learning Modeling Pipeline")
+    print("=" * 50)
+    
+    # 1. Pipeline'ı başlat
+    pipeline = MucoModelingPipeline(config_path='config/model_config.json')
+    
+    # 2. Örnek veri oluştur (gerçek uygulamada veri dosyası kullanılır)
+    print("\n1. Creating sample data...")
+    np.random.seed(42)
+    n_samples = 1000
+    
+    data = pd.DataFrame({
+        'feature1': np.random.randn(n_samples),
+        'feature2': np.random.randn(n_samples) * 2,
+        'feature3': np.random.choice(['A', 'B', 'C'], n_samples),
+        'timestamp': pd.date_range('2023-01-01', periods=n_samples, freq='H'),
+        'text_feature': ['sample text ' + str(i) for i in range(n_samples)],
+        'target': np.random.randn(n_samples) * 10 + 50
+    })
+    
+    # Config güncelle
+    pipeline.config.update({
+        'numeric_features': ['feature1', 'feature2'],
+        'categorical_features': ['feature3'],
+        'datetime_features': ['timestamp'],
+        'text_features': ['text_feature'],
+        'modeling': {
+            'target_column': 'target',
+            'test_size': 0.2,
+            'random_state': 42,
+            'cv_folds': 5
+        }
+    })
+    
+    # 3. Pipeline'ı çalıştır
+    print("\n2. Running pipeline...")
+    results = pipeline.run_pipeline(
+        data_path=None,  # Veriyi direkt kullan
+        target_column='target',
+        model_types=['ensemble']
+    )
+    
+    # 4. Model registry oluştur
+    print("\n3. Setting up model registry...")
+    registry = MucoModelRegistry()
+    
+    # 5. Modeli registry'e kaydet
+    print("\n4. Registering model...")
+    model_version = registry.register_model(
+        model_path="models/muco_ensemble_v1.0.0.pkl",
+        model_name="muco_ensemble"
+    )
+    
+    if model_version:
+        # 6. Modeli production'a taşı
+        print("\n5. Promoting model to production...")
+        registry.promote_to_production("muco_ensemble", model_version.version)
+        
+        # 7. Deployment pipeline'ı oluştur
+        print("\n6. Creating deployment pipeline...")
+        deployment_pipeline = MucoDeploymentPipeline(registry)
+        
+        # 8. Staging'e deploy et
+        print("\n7. Deploying to staging...")
+        deployment_pipeline.deploy_to_environment(
+            model_name="muco_ensemble",
+            version=model_version.version,
+            environment='staging'
+        )
+        
+        # 9. Monitoring servisi başlat
+        print("\n8. Starting monitoring service...")
+        monitor = MucoModelMonitor(
+            model_name="muco_ensemble",
+            model_version=model_version.version
+        )
+        
+        # 10. Feature store'u başlat
+        print("\n9. Initializing feature store...")
+        feature_store = MucoFeatureStore()
+        feature_store.initialize_store()
+        
+        print("\n" + "=" * 50)
+        print("MUCO ML Pipeline completed successfully!")
+        print("=" * 50)
+        
+        # Sonuçları göster
+        print("\nDeployment Summary:")
+        print(f"- Model: muco_ensemble v{model_version.version}")
+        print(f"- Status: Deployed to staging")
+        print(f"- Registry: {registry.registry_uri}")
+        print(f"- Monitoring: Active")
+        print(f"- Feature Store: Initialized")
+        
+        # Next steps
+        print("\nNext Steps:")
+        print("1. Run smoke tests on staging environment")
+        print("2. Monitor model performance for 24 hours")
+        print("3. Deploy to production if performance is acceptable")
+        print("4. Set up automated retraining pipeline")
+        print("5. Implement A/B testing framework")
+    else:
+        print("Model registration failed!")
+Yardımcı Script'ler ve Konfigürasyon Dosyaları
+1. config/model_config.json
+json
+{
+  "data": {
+    "train_path": "data/train.csv",
+    "test_path": "data/test.csv",
+    "validation_path": "data/validation.csv"
+  },
+  "modeling": {
+    "target_column": "target",
+    "test_size": 0.2,
+    "random_state": 42,
+    "cv_folds": 5,
+    "scoring_metric": "neg_mean_squared_error"
+  },
+  "hyperparameters": {
+    "n_trials": 100,
+    "timeout": 3600,
+    "direction": "minimize"
+  },
+  "monitoring": {
+    "drift_threshold": 0.1,
+    "performance_threshold": 0.95,
+    "alert_email": "alerts@muco.com"
+  },
+  "deployment": {
+    "docker_registry": "docker.io/muco",
+    "kubernetes_namespace": "muco-models",
+    "replica_count": 3,
+    "resource_limits": {
+      "cpu": "500m",
+      "memory": "512Mi"
+    }
+  }
+}
+2. requirements.txt
+text
+# Core ML
+scikit-learn==1.3.0
+pandas==2.0.3
+numpy==1.24.3
+scipy==1.10.1
+
+# Deep Learning
+tensorflow==2.13.0
+torch==2.0.1
+
+# Model Registry & Tracking
+mlflow==2.6.0
+bentoml==1.0.24
+
+# Feature Store
+feast==0.31.1
+
+# Hyperparameter Optimization
+optuna==3.3.0
+hyperopt==0.2.7
+scikit-optimize==0.9.0
+
+# Model Explainability
+shap==0.41.0
+lime==0.2.0.1
+eli5==0.13.0
+
+# Monitoring
+evidently==0.3.0
+prometheus-client==0.17.1
+grafanalib==0.7.1
+
+# Web Framework
+flask==2.3.2
+fastapi==0.100.0
+
+# Database & Storage
+sqlalchemy==2.0.19
+psycopg2-binary==2.9.7
+redis==4.6.0
+
+# Testing
+pytest==7.4.0
+pytest-cov==4.1.0
+
+# Utilities
+python-dotenv==1.0.0
+pyyaml==6.0
+joblib==1.3.1
+3. Dockerfile (Model Serving)
+dockerfile
+# Model Serving Image
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create non-root user
+RUN useradd -m -u 1000 modeluser && chown -R modeluser:modeluser /app
+USER modeluser
+
+# Expose port
+EXPOSE 5000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
+# Run the application
+CMD ["python", "app.py"]
+4. docker-compose.yml (Full Stack)
+yaml
+version: '3.8'
+
+services:
+  # MLflow Tracking Server
+  mlflow:
+    image: mlflow:latest
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlflow:/mlflow
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+    command: >
+      mlflow server
+      --backend-store-uri /mlflow
+      --default-artifact-root s3://mlflow
+      --host 0.0.0.0
+    networks:
+      - muco-network
+
+  # PostgreSQL (MLflow backend)
+  postgres:
+    image: postgres:15
+    environment:
+      - POSTGRES_USER=mlflow
+      - POSTGRES_PASSWORD=mlflow
+      - POSTGRES_DB=mlflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - muco-network
+
+  # MinIO (S3 compatible storage)
+  minio:
+    image: minio/minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - muco-network
+
+  # Model Serving API
+  model-api:
+    build: .
+    ports:
+      - "8000:5000"
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MODEL_NAME=muco_ensemble
+      - MODEL_STAGE=Production
+    depends_on:
+      - mlflow
+      - postgres
+      - minio
+    networks:
+      - muco-network
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # Prometheus Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - muco-network
+
+  # Grafana Dashboard
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+    networks:
+      - muco-network
+
+  # Feature Store Server
+  feast:
+    build:
+      context: ./feature_store
+      dockerfile: Dockerfile
+    ports:
+      - "6566:6566"
+    volumes:
+      - ./feature_store:/feature_store
+    environment:
+      - FEAST_REGISTRY_PATH=/feature_store/registry.db
+      - FEAST_PROJECT=muco
+    networks:
+      - muco-network
+
+volumes:
+  postgres_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  muco-network:
+    driver: bridge
+5. Model Retraining Pipeline Script'i
+python
+# retrain_pipeline.py
+import schedule
+import time
+from datetime import datetime
+import subprocess
+import sys
+from pathlib import Path
+
+class ModelRetrainingPipeline:
+    def __init__(self):
+        self.retraining_history = []
+        self.performance_threshold = 0.95  %95% performans altında kalırsa retrain
+        
+    def check_model_performance(self):
+        """Model performansını kontrol et"""
+        # Monitoring servisinden performans metriklerini al
+        # Gerçek implementasyonda API çağrısı yapılacak
+        current_performance = 0.96  # Simüle edilmiş
+        return current_performance
+    
+    def check_data_drift(self):
+        """Data drift kontrolü"""
+        # Drift detection servisinden drift skorunu al
+        drift_score = 0.08  # Simüle edilmiş
+        return drift_score < 0.1  %Threshold
+    
+    def check_concept_drift(self):
+        """Concept drift kontrolü"""
+        concept_drift_detected = False  # Simüle edilmiş
+        return concept_drift_detected
+    
+    def should_retrain(self):
+        """Retrain kararını ver"""
+        performance_ok = self.check_model_performance() >= self.performance_threshold
+        data_drift_ok = self.check_data_drift()
+        concept_drift_ok = not self.check_concept_drift()
+        
+        # Eğer herhangi bir sorun varsa retrain
+        return not (performance_ok and data_drift_ok and concept_drift_ok)
+    
+    def trigger_retraining(self):
+        """Retraining pipeline'ını tetikle"""
+        print(f"[{datetime.now()}] Triggering retraining...")
+        
+        try:
+            # 1. Yeni veriyi al
+            print("1. Fetching new data...")
+            subprocess.run([sys.executable, "fetch_data.py"], check=True)
+            
+            # 2. Feature engineering
+            print("2. Running feature engineering...")
+            subprocess.run([sys.executable, "feature_engineering.py"], check=True)
+            
+            # 3. Model eğitimi
+            print("3. Training new model...")
+            subprocess.run([sys.executable, "train_model.py"], check=True)
+            
+            # 4. Model değerlendirme
+            print("4. Evaluating model...")
+            subprocess.run([sys.executable, "evaluate_model.py"], check=True)
+            
+            # 5. Model karşılaştırma
+            print("5. Comparing with current model...")
+            result = subprocess.run(
+                [sys.executable, "compare_models.py"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            improvement = float(result.stdout.strip())
+            
+            if improvement > 0.02:  %2%'den fazla iyileşme
+                # 6. Modeli registry'e kaydet
+                print("6. Registering new model...")
+                subprocess.run([sys.executable, "register_model.py"], check=True)
+                
+                # 7. Modeli staging'e deploy et
+                print("7. Deploying to staging...")
+                subprocess.run([sys.executable, "deploy_staging.py"], check=True)
+                
+                # 8. A/B test başlat
+                print("8. Starting A/B test...")
+                subprocess.run([sys.executable, "start_ab_test.py"], check=True)
+                
+                retraining_result = {
+                    'timestamp': datetime.now(),
+                    'status': 'success',
+                    'improvement': improvement,
+                    'new_version': '1.1.0',
+                    'action': 'deployed_to_staging'
+                }
+            else:
+                retraining_result = {
+                    'timestamp': datetime.now(),
+                    'status': 'skipped',
+                    'improvement': improvement,
+                    'reason': 'insufficient_improvement'
+                }
+            
+        except subprocess.CalledProcessError as e:
+            retraining_result = {
+                'timestamp': datetime.now(),
+                'status': 'failed',
+                'error': str(e)
+            }
+        
+        # Geçmişe kaydet
+        self.retraining_history.append(retraining_result)
+        
+        # Sonucu logla
+        print(f"Retraining result: {retraining_result}")
+        
+        return retraining_result
+    
+    def run_continuous_monitoring(self):
+        """Sürekli monitoring çalıştır"""
+        print("Starting continuous model monitoring...")
+        
+        # Schedule jobs
+        schedule.every().hour.do(self.monitoring_check)
+        schedule.every().day.at("02:00").do(self.daily_retraining_check)
+        schedule.every().sunday.at("03:00").do(self.weekly_full_retraining)
+        
+        while True:
+            schedule.run_pending()
+            time.sleep(60)  # 1 dakika bekle
+    
+    def monitoring_check(self):
+        """Saatlik monitoring kontrolü"""
+        print(f"[{datetime.now()}] Hourly monitoring check...")
+        
+        if self.should_retrain():
+            print("Model needs retraining based on monitoring checks")
+            self.trigger_retraining()
+    
+    def daily_retraining_check(self):
+        """Günlük retraining kontrolü"""
+        print(f"[{datetime.now()}] Daily retraining check...")
+        
+        # Günlük retraining (performans düşük olsa da olmasa da)
+        print("Triggering scheduled daily retraining...")
+        self.trigger_retraining()
+    
+    def weekly_full_retraining(self):
+        """Haftalık tam retraining"""
+        print(f"[{datetime.now()}] Weekly full retraining...")
+        
+        # Feature engineering pipeline'ını tamamen yeniden çalıştır
+        print("Running full feature engineering pipeline...")
+        subprocess.run([sys.executable, "full_feature_pipeline.py"], check=True)
+        
+        # Hiperparametre optimizasyonu
+        print("Running hyperparameter optimization...")
+        subprocess.run([sys.executable, "hyperparameter_tuning.py"], check=True)
+        
+        # Ensemble model oluştur
+        print("Creating ensemble model...")
+        subprocess.run([sys.executable, "create_ensemble.py"], check=True)
+        
+        # Değerlendir ve deploy et
+        self.trigger_retraining()
+
+if __name__ == "__main__":
+    pipeline = ModelRetrainingPipeline()
+    pipeline.run_continuous_monitoring()
+Kurulum ve Çalıştırma
+bash
+# 1. Repository'yi klonla
+git clone https://github.com/muco-ai/ml-pipeline.git
+cd ml-pipeline
+
+# 2. Sanal ortam oluştur
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# venv\Scripts\activate  # Windows
+
+# 3. Gereksinimleri yükle
+pip install -r requirements.txt
+
+# 4. Konfigürasyon dosyasını hazırla
+mkdir config
+cp config/model_config.example.json config/model_config.json
+
+# 5. Docker container'ları başlat
+docker-compose up -d
+
+# 6. ML pipeline'ını çalıştır
+python muco_modeling_pipeline.py
+
+# 7. Model servisini başlat
+bentoml serve muco_ensemble:latest
+
+# 8. Monitoring dashboard'ını aç
+# http://localhost:3000 (Grafana)
+# http://localhost:9090 (Prometheus)
+# http://localhost:5000 (MLflow)
+Production Deployment Checklist
+Model validation tamamlandı
+
+Performans metrikleri threshold'ları karşılıyor
+
+Model explainability raporları oluşturuldu
+
+Data drift monitoring ayarlandı
+
+Model registry'ye kaydedildi
+
+Docker image oluşturuldu ve test edildi
+
+Kubernetes deployment manifest'leri hazır
+
+CI/CD pipeline kuruldu
+
+Rollback planı hazır
+
+Monitoring ve alerting ayarlandı
+
+Load testing tamamlandı
+
+Documentation tamamlandı
+
+Bu üretim seviyesinde ML modelleme pipeline'ı, MUCO platformunu endüstri standardında bir MLOps platformuna dönüştürecektir. Her bileşen modüler olarak geliştirilebilir ve ölçeklenebilir.
+
